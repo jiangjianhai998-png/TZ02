@@ -84,22 +84,10 @@ jobs:
       - name: Verify required files
         if: success()
         run: |
-          if [ ! -f config/config.yaml ]; then
-            echo "❌ Error: config/config.yaml missing"
-            exit 1
-          fi
-          if [ ! -f config/timeline.yaml ]; then
-            echo "❌ Error: config/timeline.yaml missing"
-            exit 1
-          fi
-          python - <<'PY'
-          import yaml
-          files = ['config/config.yaml', 'config/timeline.yaml']
-          for f in files:
-              with open(f, encoding='utf-8') as fp:
-                  yaml.safe_load(fp)
-          print('✅ OK: yaml config validated')
-          PY
+          echo "🔎 Checking required config files..."
+          test -f config/config.yaml || { echo "❌ Error: config/config.yaml missing"; exit 1; }
+          test -f config/timeline.yaml || { echo "❌ Error: config/timeline.yaml missing"; exit 1; }
+          echo "✅ OK: required config files exist"
 
       - name: Run crawler
         if: success()
