@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_delete_runs:
+        description: "输入 YES 才删除历史 workflow runs；留空则只做签到检查"
         required: false
         default: ""
 
