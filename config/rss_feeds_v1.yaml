@@ -1,40 +1,261 @@
-# 已根据我们的规划制作的配置片段
-# 请将以下 feeds 替换 config.yaml 中 rss: -> feeds: 部分
+# AI 内容工厂 RSS 源 V2 Pro
+# 用法：将本文件中的 rss: 整段替换 config.yaml 里的 rss: 配置
+# 目标：发现新内容后尽快抓取，AI 分析后立即推送，不做时间段汇总
 
 rss:
   enabled: true
 
+  # 只抓取最近内容，避免旧新闻重复推送
   freshness_filter:
     enabled: true
     max_age_days: 1
 
+  # 建议配合主配置中的调度改为高频轮询，例如每 5-15 分钟运行一次
+  # 如果你的主程序支持以下字段，可以保留；不支持也不会影响 feeds 列表本身
+  realtime_mode:
+    enabled: true
+    push_after_analysis: true
+    batch_summary: false
+
   feeds:
-    # ===== NBA / 体育 =====
+    # ===== NBA / 篮球 =====
     - id: "espn-nba"
       name: "ESPN NBA"
       url: "https://www.espn.com/espn/rss/nba/news"
+      category: "sports_nba"
+      priority: 10
 
-    # ===== 足球 =====
+    - id: "nba-news"
+      name: "NBA News"
+      url: "https://www.nba.com/news/rss.xml"
+      category: "sports_nba"
+      priority: 10
+
+    - id: "cbssports-nba"
+      name: "CBS Sports NBA"
+      url: "https://www.cbssports.com/rss/headlines/nba/"
+      category: "sports_nba"
+      priority: 8
+
+    - id: "si-nba"
+      name: "Sports Illustrated NBA"
+      url: "https://www.si.com/rss/si_nba.rss"
+      category: "sports_nba"
+      priority: 7
+
+    # ===== 欧洲足球 / 国际足球 =====
     - id: "bbc-football"
       name: "BBC Football"
       url: "https://feeds.bbci.co.uk/sport/football/rss.xml"
+      category: "sports_football"
+      priority: 10
+
+    - id: "espn-soccer"
+      name: "ESPN Soccer"
+      url: "https://www.espn.com/espn/rss/soccer/news"
+      category: "sports_football"
+      priority: 9
+
+    - id: "skysports-football"
+      name: "Sky Sports Football"
+      url: "https://www.skysports.com/rss/12040"
+      category: "sports_football"
+      priority: 9
+
+    - id: "uefa-news"
+      name: "UEFA News"
+      url: "https://www.uefa.com/rssfeed/news/rss.xml"
+      category: "sports_football"
+      priority: 8
+
+    - id: "fifa-news"
+      name: "FIFA News"
+      url: "https://www.fifa.com/fifaplus/en/rss.xml"
+      category: "sports_football"
+      priority: 7
+
+    - id: "goal-news"
+      name: "GOAL Football"
+      url: "https://www.goal.com/feeds/en/news"
+      category: "sports_football"
+      priority: 7
 
     # ===== 德州扑克 =====
     - id: "pokernews"
       name: "PokerNews"
       url: "https://www.pokernews.com/rss.php"
+      category: "poker"
+      priority: 10
 
-    # ===== 博彩行业 =====
+    - id: "cardplayer"
+      name: "CardPlayer"
+      url: "https://www.cardplayer.com/poker-news/rss"
+      category: "poker"
+      priority: 8
+
+    - id: "poker-org"
+      name: "Poker.org"
+      url: "https://www.poker.org/feed/"
+      category: "poker"
+      priority: 8
+
+    - id: "wsop-news"
+      name: "WSOP News"
+      url: "https://www.wsop.com/news/rss/"
+      category: "poker"
+      priority: 7
+
+    # ===== 博彩行业 / iGaming =====
     - id: "igamingbusiness"
       name: "iGaming Business"
       url: "https://igamingbusiness.com/feed/"
+      category: "igaming"
+      priority: 10
 
-    # ===== 博彩监管 =====
     - id: "igamingbusiness-legal"
       name: "iGaming Business Legal"
       url: "https://igamingbusiness.com/topic/legal-compliance/feed/"
+      category: "igaming_regulation"
+      priority: 10
 
-    # ===== 支付 =====
+    - id: "sbc-news"
+      name: "SBC News"
+      url: "https://sbcnews.co.uk/feed/"
+      category: "igaming"
+      priority: 9
+
+    - id: "gambling-insider"
+      name: "Gambling Insider"
+      url: "https://www.gamblinginsider.com/rss.xml"
+      category: "igaming"
+      priority: 8
+
+    - id: "gambling-news"
+      name: "Gambling News"
+      url: "https://www.gamblingnews.com/feed/"
+      category: "igaming"
+      priority: 8
+
+    - id: "focus-gaming-news"
+      name: "Focus Gaming News"
+      url: "https://focusgn.com/feed"
+      category: "igaming"
+      priority: 7
+
+    - id: "cdc-gaming"
+      name: "CDC Gaming"
+      url: "https://cdcgaming.com/feed/"
+      category: "igaming"
+      priority: 7
+
+    - id: "asia-gaming-brief"
+      name: "Asia Gaming Brief"
+      url: "https://agbrief.com/feed/"
+      category: "igaming_asia"
+      priority: 9
+
+    # ===== 博彩监管 / 合规 / 风险 =====
+    - id: "ukgc-news"
+      name: "UK Gambling Commission News"
+      url: "https://www.gamblingcommission.gov.uk/news/rss"
+      category: "igaming_regulation"
+      priority: 10
+
+    - id: "gambling-compliance"
+      name: "Vixio GamblingCompliance"
+      url: "https://www.vixio.com/insights/gc/rss.xml"
+      category: "igaming_regulation"
+      priority: 8
+
+    # ===== AI / 科技 =====
+    - id: "openai-blog"
+      name: "OpenAI Blog"
+      url: "https://openai.com/blog/rss.xml"
+      category: "ai"
+      priority: 10
+
+    - id: "anthropic-news"
+      name: "Anthropic News"
+      url: "https://www.anthropic.com/news/rss.xml"
+      category: "ai"
+      priority: 9
+
+    - id: "google-ai-blog"
+      name: "Google AI Blog"
+      url: "https://blog.google/technology/ai/rss/"
+      category: "ai"
+      priority: 8
+
+    - id: "huggingface-blog"
+      name: "Hugging Face Blog"
+      url: "https://huggingface.co/blog/feed.xml"
+      category: "ai"
+      priority: 8
+
+    - id: "techcrunch-ai"
+      name: "TechCrunch AI"
+      url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+      category: "ai"
+      priority: 8
+
+    - id: "venturebeat-ai"
+      name: "VentureBeat AI"
+      url: "https://venturebeat.com/category/ai/feed/"
+      category: "ai"
+      priority: 7
+
+    - id: "the-decoder"
+      name: "The Decoder"
+      url: "https://the-decoder.com/feed/"
+      category: "ai"
+      priority: 7
+
+    # ===== 支付 / 金融科技 =====
     - id: "finextra"
       name: "Finextra"
       url: "https://www.finextra.com/rss/headlines.aspx"
+      category: "payments"
+      priority: 9
+
+    - id: "pymnts"
+      name: "PYMNTS"
+      url: "https://www.pymnts.com/feed/"
+      category: "payments"
+      priority: 8
+
+    - id: "stripe-news"
+      name: "Stripe News"
+      url: "https://stripe.com/newsroom/news.rss"
+      category: "payments"
+      priority: 8
+
+    - id: "paypal-news"
+      name: "PayPal News"
+      url: "https://newsroom.paypal-corp.com/news?pagetemplate=rss"
+      category: "payments"
+      priority: 7
+
+    - id: "visa-news"
+      name: "Visa News"
+      url: "https://usa.visa.com/about-visa/newsroom/press-releases.rss"
+      category: "payments"
+      priority: 7
+
+    # ===== 东南亚 / 亚洲商业新闻 =====
+    - id: "channelnewsasia-business"
+      name: "CNA Business"
+      url: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6936"
+      category: "sea_business"
+      priority: 8
+
+    - id: "nikkei-asia"
+      name: "Nikkei Asia"
+      url: "https://asia.nikkei.com/rss/feed/nar"
+      category: "asia_business"
+      priority: 7
+
+    - id: "techinasia"
+      name: "Tech in Asia"
+      url: "https://www.techinasia.com/feed"
+      category: "asia_tech"
+      priority: 7

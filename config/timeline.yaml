@@ -82,8 +82,8 @@
 # 📋 预设模板一览（选一个就行）
 # ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
 #
-#   1️⃣ always_on        全天候，有新增就推（默认）
-#   2️⃣ morning_evening  全天推送 + 晚间汇总（推荐大多数人）
+#   1️⃣ always_on        全天实时：采集 + AI分析 + 新增即推（推荐）
+#   2️⃣ morning_evening  全天推送 + 晚间汇总
 #   3️⃣ office_hours     工作日三段式：到岗速览→午间热点→收工汇总
 #   4️⃣ night_owl        午后速览 + 深夜全天汇总
 #   5️⃣ custom           完全自定义（需要编辑本文件底部的 custom 段）
@@ -116,29 +116,26 @@ presets:
   # 全天：推送 ✓ | AI分析 ✗ | 不限推送次数
   # ───────────────────────────────────────────────────────────
   always_on:
-    name: "全天监控"
-    description: "全天候监控，有新增立即推送。适合重度用户。"
+    name: "全天实时推送"
+    description: "全天候采集 + AI分析 + 新增内容立即推送。适合Telegram实时内容工厂。"
 
-    # 默认配置 ── 不在任何时间段内时，使用这组开关
-    # 因为这个模式没有划分时间段，所以 default 就是全天的行为
+    # 默认配置 ── 全天都使用这组开关
+    # 目标流程：发现新内容 → 采集 → AI分析 → Telegram立即推送
     default:
-      collect: true                # 采集数据（爬取热榜 + RSS）
-      analyze: false               # 不做 AI 分析（节省 API 费用）
-      ai_mode: "current"           # AI 分析当前榜单
+      collect: true                # 持续采集数据（热榜 + RSS）
+      analyze: true                # 每次运行都执行 AI 分析
+      ai_mode: "incremental"       # 只分析新增内容，避免重复分析旧内容
       push: true                   # 有新内容就推送
-      report_mode: "incremental"   # 只推送新增内容，避免重复
-      once:                        # 限制每个时间段内只执行一次
-        analyze: false             #   不限制分析次数
-        push: false                #   不限制推送次数
+      report_mode: "incremental"   # 只推送新增内容，不做定时汇总
+      once:
+        analyze: false             # 不限制分析次数
+        push: false                # 不限制推送次数，有新增就推
 
-    # 没有定义任何时间段，全天都走 default
-    #
-    # 语法提示：{} 是 YAML 的「空字典」写法，表示里面没有任何内容。
-    # 等价于写成多行但什么都不填。后面的 [] 同理，表示「空列表」。
+    # 不使用任何固定时间段，全天都走 default 实时模式
     periods: {}
     day_plans:
       all_day:
-        periods: []                   # 空列表 = 这天不启用任何时间段
+        periods: []
     week_map:
       1: "all_day"                 # 周一
       2: "all_day"                 # 周二
