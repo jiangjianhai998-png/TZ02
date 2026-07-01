@@ -137,7 +137,7 @@ filter:
 ai_filter:
   batch_size: 10
   batch_interval: 0
-  min_score: 0.68
+  min_score: 0.65
   reclassify_threshold: 0.58
   prompt_file: prompt.txt
   extract_prompt_file: extract_prompt.txt
@@ -219,13 +219,14 @@ ai:
   num_retries: 2
   fallback_models:
   - deepseek/deepseek-v3.1
+  - openai/gpt-4.1-mini
   - openai/gpt-4o-mini
 ai_analysis:
   enabled: true
   language: Chinese
   prompt_file: ai_analysis_prompt.txt
   mode: follow_report
-  max_news_for_analysis: 60
+  max_news_for_analysis: 100
   include_rss: true
   include_standalone: false
   include_rank_timeline: true
@@ -245,11 +246,11 @@ advanced:
   mcp_version_check_url: https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_mcp
   configs_version_check_url: https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_configs
   crawler:
-    request_interval: 500
+    request_interval: 200
     use_proxy: false
     default_proxy: http://127.0.0.1:10801
   rss:
-    request_interval: 500
+    request_interval: 200
     timeout: 20
     use_proxy: false
     proxy_url: ''
@@ -264,6 +265,6 @@ advanced:
     feishu: 30000
     bark: 4000
     slack: 3500
-    telegram: 3500
+    telegram: 3900
   batch_send_interval: 0
   feishu_message_separator: ━━━━━━━━━━━━━━━━

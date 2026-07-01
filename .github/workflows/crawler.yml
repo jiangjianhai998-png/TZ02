@@ -3,18 +3,14 @@ name: Get Hot News
 on:
   schedule:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # ✅ 企业版调度 / Enterprise Schedule
+    # ✅ V2 实时内容工厂调度 / Realtime Factory Schedule
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # GitHub Actions 的 cron 使用 UTC 时间。
-    # 以下时间已按东南亚时间 Asia/Singapore / UTC+8 换算：
-    #   08:15 SGT 早间资讯
-    #   10:15 SGT 上午补充
-    #   12:15 SGT 午间资讯
-    #   15:15 SGT 下午热点
-    #   18:15 SGT 晚间黄金档
-    #   21:15 SGT 夜间复盘
-    # 可按业务增长后再增加频率。
-    - cron: "15 0,2,4,7,10,13 * * *"
+    # 每 10 分钟启动一次检查任务：
+    #   - 有新内容：抓取 → AI 分析/翻译 → 去重 → 立即推送 Telegram 群组 + 频道
+    #   - 无新内容：直接结束，不做汇总推送
+    # 注意：这是“每 10 分钟检查一次”，不是“每 10 分钟强制推送一次”。
+    - cron: "*/10 * * * *"
 
   workflow_dispatch:
 
@@ -28,13 +24,27 @@ permissions:
 
 jobs:
   crawl:
-    name: Crawl hot news and push reports
+    name: Realtime crawl and instant push
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     env:
       TZ: Asia/Singapore
       GITHUB_ACTIONS: true
+
+      # V2 实时推送模式：发现新内容后立即分析、立即推送；不做定时汇总。
+      CRAWLER_MODE: realtime
+      PUSH_MODE: immediate
+      SUMMARY_PUSH_ENABLED: "false"
+      DEDUP_ENABLED: "true"
+      CACHE_DIR: cache
+      LOG_DIR: logs
+
+      # 单源超时 / 重试参数。程序如支持这些环境变量，会自动读取。
+      RSS_TIMEOUT_SECONDS: "15"
+      HTTP_TIMEOUT_SECONDS: "15"
+      MAX_RETRY_TIMES: "2"
+      RETRY_SLEEP_SECONDS: "30"
 
     steps:
       - name: Checkout repository
@@ -46,12 +56,12 @@ jobs:
       # --------------------------------------------------------------------------------
       # 🚦 TRAFFIC CONTROL / 流量控制
       # --------------------------------------------------------------------------------
-      # 随机延迟 1-180 秒，避免多个仓库或多个任务同时请求数据源。
+      # 随机延迟 1-120 秒，避免多个仓库或多个任务同时请求数据源。
       - name: Random delay
         if: success()
         run: |
           echo "🎲 Generating random delay..."
-          DELAY=$(( ( RANDOM % 180 ) + 1 ))
+          DELAY=$(( ( RANDOM % 120 ) + 1 ))
           echo "⏸️ Sleeping for ${DELAY} seconds"
           sleep "${DELAY}s"
           echo "▶️ Delay finished"
@@ -66,7 +76,7 @@ jobs:
         if: success()
         uses: astral-sh/setup-uv@v7
 
-      - name: Cache uv dependencies
+      - name: Restore uv dependencies cache
         if: success()
         uses: actions/cache@v4
         with:
@@ -77,9 +87,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
+      # --------------------------------------------------------------------------------
+      # 🧠 RUNTIME STATE / 去重缓存与日志
+      # --------------------------------------------------------------------------------
+      # 说明：cache/ 用于保存已推送内容的去重状态；logs/ 用于排查问题。
+      # 如果程序内部支持 cache/history.json 或 cache/news.db，会自动复用。
+      - name: Restore realtime state
+        if: success()
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            cache
+            logs
+          key: realtime-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            realtime-state-${{ github.ref_name }}-
+
+      - name: Prepare runtime directories
+        if: success()
+        run: |
+          mkdir -p cache logs
+          touch logs/crawler.log logs/telegram.log logs/ai.log logs/error.log
+          echo "✅ Runtime directories ready"
+
       - name: Install dependencies
         if: success()
-        run: uv sync --frozen --no-dev
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "📦 Installing dependencies, attempt ${i}/3"
+            if uv sync --frozen --no-dev; then
+              echo "✅ Dependencies installed"
+              exit 0
+            fi
+            echo "⚠️ Dependency install failed, retrying in 30 seconds..."
+            sleep 30
+          done
+          echo "❌ Dependency install failed after 3 attempts"
+          exit 1
 
       - name: Verify required files
         if: success()
@@ -89,7 +134,7 @@ jobs:
           test -f config/timeline.yaml || { echo "❌ Error: config/timeline.yaml missing"; exit 1; }
           echo "✅ OK: required config files exist"
 
-      - name: Run crawler
+      - name: Run realtime crawler
         if: success()
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
@@ -131,8 +176,35 @@ jobs:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: ${{ secrets.S3_REGION }}
         run: |
-          echo "🚀 Starting trendradar crawler at $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          uv run python -m trendradar
+          set -e
+          echo "🚀 Starting realtime trendradar crawler at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "mode=${CRAWLER_MODE}, push=${PUSH_MODE}, dedup=${DEDUP_ENABLED}"
+
+          for i in 1 2; do
+            echo "🔁 Crawler attempt ${i}/2"
+            if timeout 18m uv run python -m trendradar 2>&1 | tee -a logs/crawler.log; then
+              echo "✅ Realtime crawler finished"
+              exit 0
+            fi
+            echo "⚠️ Crawler attempt ${i}/2 failed" | tee -a logs/error.log
+            if [ "$i" = "1" ]; then
+              echo "⏳ Waiting ${RETRY_SLEEP_SECONDS}s before retry..."
+              sleep "${RETRY_SLEEP_SECONDS}"
+            fi
+          done
+
+          echo "❌ Realtime crawler failed after retries" | tee -a logs/error.log
+          exit 1
+
+      # 保存去重缓存与日志，便于下次 10 分钟检查时跳过已推送内容。
+      - name: Save realtime state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            cache
+            logs
+          key: realtime-state-${{ github.ref_name }}-${{ github.run_id }}
 
       # --------------------------------------------------------------------------------
       # ☁️ CLOUDFLARE PAGES DEPLOY / 部署到 Cloudflare Pages（可选）
