@@ -1,0 +1,40 @@
+# 已根据我们的规划制作的配置片段
+# 请将以下 feeds 替换 config.yaml 中 rss: -> feeds: 部分
+
+rss:
+  enabled: true
+
+  freshness_filter:
+    enabled: true
+    max_age_days: 1
+
+  feeds:
+    # ===== NBA / 体育 =====
+    - id: "espn-nba"
+      name: "ESPN NBA"
+      url: "https://www.espn.com/espn/rss/nba/news"
+
+    # ===== 足球 =====
+    - id: "bbc-football"
+      name: "BBC Football"
+      url: "https://feeds.bbci.co.uk/sport/football/rss.xml"
+
+    # ===== 德州扑克 =====
+    - id: "pokernews"
+      name: "PokerNews"
+      url: "https://www.pokernews.com/rss.php"
+
+    # ===== 博彩行业 =====
+    - id: "igamingbusiness"
+      name: "iGaming Business"
+      url: "https://igamingbusiness.com/feed/"
+
+    # ===== 博彩监管 =====
+    - id: "igamingbusiness-legal"
+      name: "iGaming Business Legal"
+      url: "https://igamingbusiness.com/topic/legal-compliance/feed/"
+
+    # ===== 支付 =====
+    - id: "finextra"
+      name: "Finextra"
+      url: "https://www.finextra.com/rss/headlines.aspx"
