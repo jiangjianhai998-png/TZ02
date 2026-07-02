@@ -565,6 +565,12 @@ class NotificationDispatcher:
         if not telegram_tokens or not telegram_chat_ids:
             return False
 
+        # Telegram 常见用法：一个 Bot Token 同时推送到多个 chat_id（群组 + 频道）。
+        # 旧逻辑要求 token 数量必须和 chat_id 数量完全一致，导致 GitHub Actions 中
+        # TELEGRAM_BOT_TOKEN=单个值、TELEGRAM_CHAT_ID=群组;频道 时整个 Telegram 渠道被跳过。
+        if len(telegram_tokens) == 1 and len(telegram_chat_ids) > 1:
+            telegram_tokens = telegram_tokens * len(telegram_chat_ids)
+
         valid, count = validate_paired_configs(
             {"bot_token": telegram_tokens, "chat_id": telegram_chat_ids},
             "Telegram",

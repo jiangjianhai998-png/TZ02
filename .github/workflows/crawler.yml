@@ -3,14 +3,14 @@ name: Get Hot News
 on:
   schedule:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # ✅ V2 实时内容工厂调度 / Realtime Factory Schedule
+    # ✅ V2 实时内容工厂调度（无 AI 分析版）/ Realtime Factory Schedule (No AI)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # GitHub Actions 的 cron 使用 UTC 时间。
-    # 每 10 分钟启动一次检查任务：
-    #   - 有新内容：抓取 → AI 分析/翻译 → 去重 → 立即推送 Telegram 群组 + 频道
+    # 每 20 分钟启动一次检查任务：
+    #   - 有新内容：抓取 → 去重 → 立即推送 Telegram 群组 + 频道
     #   - 无新内容：直接结束，不做汇总推送
-    # 注意：这是“每 10 分钟检查一次”，不是“每 10 分钟强制推送一次”。
-    - cron: "*/10 * * * *"
+    # 注意：这是“每 20 分钟检查一次”，不是“每 20 分钟强制推送一次”。
+    - cron: "*/20 * * * *"
 
   workflow_dispatch:
 
@@ -32,11 +32,17 @@ jobs:
       TZ: Asia/Singapore
       GITHUB_ACTIONS: true
 
-      # V2 实时推送模式：发现新内容后立即分析、立即推送；不做定时汇总。
+      # V2 实时推送模式（暂不启用 AI）：发现新内容后立即推送；不做定时汇总。
       CRAWLER_MODE: realtime
       PUSH_MODE: immediate
       SUMMARY_PUSH_ENABLED: "false"
       DEDUP_ENABLED: "true"
+
+      # 第二个仓库当前阶段：不调用 DeepSeek / 不做 AI 分析和翻译。
+      # 等 DeepSeek 充值后，再把下面两个开关改为 true，并配置 AI_API_KEY 等 Secrets。
+      AI_ANALYSIS_ENABLED: "false"
+      AI_TRANSLATION_ENABLED: "false"
+      AI_REQUIRED: "false"
       CACHE_DIR: cache
       LOG_DIR: logs
 
@@ -163,11 +169,14 @@ jobs:
           GENERIC_WEBHOOK_URL: ${{ secrets.GENERIC_WEBHOOK_URL }}
           GENERIC_WEBHOOK_TEMPLATE: ${{ secrets.GENERIC_WEBHOOK_TEMPLATE }}
 
-          # AI 配置：ai_analysis 与 ai_translation 共享模型配置。
-          AI_ANALYSIS_ENABLED: ${{ secrets.AI_ANALYSIS_ENABLED }}
-          AI_API_KEY: ${{ secrets.AI_API_KEY }}
-          AI_MODEL: ${{ secrets.AI_MODEL }}
-          AI_API_BASE: ${{ secrets.AI_API_BASE }}
+          # AI 配置：当前仓库暂不启用 AI，避免消耗 DeepSeek。
+          # 注意：这里强制关闭，不读取 GitHub Secrets，防止误触发 AI 调用。
+          AI_ANALYSIS_ENABLED: "false"
+          AI_TRANSLATION_ENABLED: "false"
+          AI_REQUIRED: "false"
+          AI_API_KEY: ""
+          AI_MODEL: ""
+          AI_API_BASE: ""
 
           # 远程存储配置
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
@@ -178,7 +187,7 @@ jobs:
         run: |
           set -e
           echo "🚀 Starting realtime trendradar crawler at $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "mode=${CRAWLER_MODE}, push=${PUSH_MODE}, dedup=${DEDUP_ENABLED}"
+          echo "mode=${CRAWLER_MODE}, push=${PUSH_MODE}, dedup=${DEDUP_ENABLED}, ai=${AI_ANALYSIS_ENABLED}, translation=${AI_TRANSLATION_ENABLED}"
 
           for i in 1 2; do
             echo "🔁 Crawler attempt ${i}/2"
@@ -196,7 +205,7 @@ jobs:
           echo "❌ Realtime crawler failed after retries" | tee -a logs/error.log
           exit 1
 
-      # 保存去重缓存与日志，便于下次 10 分钟检查时跳过已推送内容。
+      # 保存去重缓存与日志，便于下次 20 分钟检查时跳过已推送内容。
       - name: Save realtime state
         if: always()
         uses: actions/cache/save@v4

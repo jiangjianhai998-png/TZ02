@@ -471,6 +471,9 @@ def _print_notification_sources(config: Dict) -> None:
     if config["TELEGRAM_BOT_TOKEN"] and config["TELEGRAM_CHAT_ID"]:
         tokens = parse_multi_account_config(config["TELEGRAM_BOT_TOKEN"])
         chat_ids = parse_multi_account_config(config["TELEGRAM_CHAT_ID"])
+        # 支持一个 Bot Token 对多个 chat_id（群组 + 频道）。
+        if len(tokens) == 1 and len(chat_ids) > 1:
+            tokens = tokens * len(chat_ids)
         valid, count = validate_paired_configs(
             {"bot_token": tokens, "chat_id": chat_ids},
             "Telegram",
@@ -479,7 +482,7 @@ def _print_notification_sources(config: Dict) -> None:
         if valid and count > 0:
             count = min(count, max_accounts)
             token_source = "环境变量" if os.environ.get("TELEGRAM_BOT_TOKEN") else "配置文件"
-            notification_sources.append(f"Telegram({token_source}, {count}个账号)")
+            notification_sources.append(f"Telegram({token_source}, {count}个目标)")
 
     if config["EMAIL_FROM"] and config["EMAIL_PASSWORD"] and config["EMAIL_TO"]:
         from_source = "环境变量" if os.environ.get("EMAIL_FROM") else "配置文件"

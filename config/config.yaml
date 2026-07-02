@@ -3,7 +3,7 @@ app:
   show_version_update: false
 schedule:
   enabled: true
-  preset: custom
+  preset: always_on
 platforms:
   enabled: true
   api_url: ''
@@ -198,9 +198,9 @@ storage:
     html: true
   local:
     data_dir: output
-    retention_days: 0
+    retention_days: 3
   remote:
-    retention_days: 0
+    retention_days: 3
     endpoint_url: ''
     bucket_name: ''
     access_key_id: ''
@@ -216,11 +216,8 @@ ai:
   timeout: 120
   temperature: 0.25
   max_tokens: 2500
-  num_retries: 2
-  fallback_models:
-  - deepseek/deepseek-v3.1
-  - openai/gpt-4.1-mini
-  - openai/gpt-4o-mini
+  num_retries: 1
+  fallback_models: []
 ai_analysis:
   enabled: true
   language: Chinese
