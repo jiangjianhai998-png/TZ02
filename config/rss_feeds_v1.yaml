@@ -168,23 +168,12 @@ rss:
       priority: 8
 
     # ===== AI / 科技 =====
-    - id: "openai-blog"
-      name: "OpenAI Blog"
-      url: "https://openai.com/blog/rss.xml"
-      category: "ai"
-      priority: 10
 
     - id: "anthropic-news"
       name: "Anthropic News"
       url: "https://www.anthropic.com/news/rss.xml"
       category: "ai"
       priority: 9
-
-    - id: "google-ai-blog"
-      name: "Google AI Blog"
-      url: "https://blog.google/technology/ai/rss/"
-      category: "ai"
-      priority: 8
 
     - id: "huggingface-blog"
       name: "Hugging Face Blog"

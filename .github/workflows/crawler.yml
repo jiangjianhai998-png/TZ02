@@ -1,283 +1,70 @@
-name: Get Hot News
+name: TZ02 TrendRadar
 
 on:
+  workflow_dispatch:
   schedule:
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # ✅ V2 实时内容工厂调度（无 AI 分析版）/ Realtime Factory Schedule (No AI)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # GitHub Actions 的 cron 使用 UTC 时间。
-    # 每 20 分钟启动一次检查任务：
-    #   - 有新内容：抓取 → 去重 → 立即推送 Telegram 群组 + 频道
-    #   - 无新内容：直接结束，不做汇总推送
-    # 注意：这是“每 20 分钟检查一次”，不是“每 20 分钟强制推送一次”。
+    # 每 20 分钟运行一次。GitHub Actions 使用 UTC 时间。
     - cron: "*/20 * * * *"
 
-  workflow_dispatch:
+permissions:
+  contents: write
 
 concurrency:
-  group: crawler-${{ github.ref_name }}
+  group: tz02-trendradar
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  actions: write
-
 jobs:
-  crawl:
-    name: Realtime crawl and instant push
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 18
     env:
       TZ: Asia/Singapore
-      GITHUB_ACTIONS: true
-
-      # V2 实时推送模式（暂不启用 AI）：发现新内容后立即推送；不做定时汇总。
-      CRAWLER_MODE: realtime
-      PUSH_MODE: immediate
-      SUMMARY_PUSH_ENABLED: "false"
-      DEDUP_ENABLED: "true"
-
-      # 第二个仓库当前阶段：不调用 DeepSeek / 不做 AI 分析和翻译。
-      # 等 DeepSeek 充值后，再把下面两个开关改为 true，并配置 AI_API_KEY 等 Secrets。
-      AI_ANALYSIS_ENABLED: "false"
-      AI_TRANSLATION_ENABLED: "false"
-      AI_REQUIRED: "false"
-      CACHE_DIR: cache
-      LOG_DIR: logs
-
-      # 单源超时 / 重试参数。程序如支持这些环境变量，会自动读取。
-      RSS_TIMEOUT_SECONDS: "15"
-      HTTP_TIMEOUT_SECONDS: "15"
-      MAX_RETRY_TIMES: "2"
-      RETRY_SLEEP_SECONDS: "30"
+      TIMEZONE: Asia/Singapore
+      GITHUB_ACTIONS: "true"
+      AI_MODEL: deepseek/deepseek-chat
+      AI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || secrets.AI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || secrets.AI_API_KEY }}
+      AI_API_BASE: https://api.deepseek.com
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || format('{0};{1}', secrets.TELEGRAM_GROUP_CHAT_ID, secrets.TELEGRAM_CHANNEL_CHAT_ID) }}
+      STORAGE_RETENTION_DAYS: "3"
+      AI_TIMEOUT: "180"
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 1
-          clean: true
+          fetch-depth: 0
 
-      # --------------------------------------------------------------------------------
-      # 🚦 TRAFFIC CONTROL / 流量控制
-      # --------------------------------------------------------------------------------
-      # 随机延迟 1-120 秒，避免多个仓库或多个任务同时请求数据源。
-      - name: Random delay
-        if: success()
-        run: |
-          echo "🎲 Generating random delay..."
-          DELAY=$(( ( RANDOM % 120 ) + 1 ))
-          echo "⏸️ Sleeping for ${DELAY} seconds"
-          sleep "${DELAY}s"
-          echo "▶️ Delay finished"
-
-      - name: Set up Python
-        if: success()
-        uses: actions/setup-python@v6
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        if: success()
-        uses: astral-sh/setup-uv@v7
-
-      - name: Restore uv dependencies cache
-        if: success()
-        uses: actions/cache@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
         with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-uv-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-uv-
-
-      # --------------------------------------------------------------------------------
-      # 🧠 RUNTIME STATE / 去重缓存与日志
-      # --------------------------------------------------------------------------------
-      # 说明：cache/ 用于保存已推送内容的去重状态；logs/ 用于排查问题。
-      # 如果程序内部支持 cache/history.json 或 cache/news.db，会自动复用。
-      - name: Restore realtime state
-        if: success()
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            cache
-            logs
-          key: realtime-state-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            realtime-state-${{ github.ref_name }}-
-
-      - name: Prepare runtime directories
-        if: success()
-        run: |
-          mkdir -p cache logs
-          touch logs/crawler.log logs/telegram.log logs/ai.log logs/error.log
-          echo "✅ Runtime directories ready"
+          enable-cache: true
 
       - name: Install dependencies
-        if: success()
-        run: |
-          set -e
-          for i in 1 2 3; do
-            echo "📦 Installing dependencies, attempt ${i}/3"
-            if uv sync --frozen --no-dev; then
-              echo "✅ Dependencies installed"
-              exit 0
-            fi
-            echo "⚠️ Dependency install failed, retrying in 30 seconds..."
-            sleep 30
-          done
-          echo "❌ Dependency install failed after 3 attempts"
-          exit 1
+        run: uv sync --frozen
 
-      - name: Verify required files
-        if: success()
-        run: |
-          echo "🔎 Checking required config files..."
-          test -f config/config.yaml || { echo "❌ Error: config/config.yaml missing"; exit 1; }
-          test -f config/timeline.yaml || { echo "❌ Error: config/timeline.yaml missing"; exit 1; }
-          echo "✅ OK: required config files exist"
+      - name: Show schedule status
+        run: uv run python -m trendradar --show-schedule
 
-      - name: Run realtime crawler
-        if: success()
-        env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      - name: Run TrendRadar
+        run: uv run python -m trendradar
 
-          # Telegram：一个 Bot Token，多个目标 Chat ID 用英文分号分隔。
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }};${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}
-          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
-          TELEGRAM_CHANNEL_CHAT_ID: ${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}
-
-          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
-          WEWORK_WEBHOOK_URL: ${{ secrets.WEWORK_WEBHOOK_URL }}
-          WEWORK_MSG_TYPE: ${{ secrets.WEWORK_MSG_TYPE }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          EMAIL_SMTP_SERVER: ${{ secrets.EMAIL_SMTP_SERVER }}
-          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          NTFY_SERVER_URL: ${{ secrets.NTFY_SERVER_URL }}
-          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
-          BARK_URL: ${{ secrets.BARK_URL }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-          # 通用 Webhook 配置
-          GENERIC_WEBHOOK_URL: ${{ secrets.GENERIC_WEBHOOK_URL }}
-          GENERIC_WEBHOOK_TEMPLATE: ${{ secrets.GENERIC_WEBHOOK_TEMPLATE }}
-
-          # AI 配置：当前仓库暂不启用 AI，避免消耗 DeepSeek。
-          # 注意：这里强制关闭，不读取 GitHub Secrets，防止误触发 AI 调用。
-          AI_ANALYSIS_ENABLED: "false"
-          AI_TRANSLATION_ENABLED: "false"
-          AI_REQUIRED: "false"
-          AI_API_KEY: ""
-          AI_MODEL: ""
-          AI_API_BASE: ""
-
-          # 远程存储配置
-          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-        run: |
-          set -e
-          echo "🚀 Starting realtime trendradar crawler at $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "mode=${CRAWLER_MODE}, push=${PUSH_MODE}, dedup=${DEDUP_ENABLED}, ai=${AI_ANALYSIS_ENABLED}, translation=${AI_TRANSLATION_ENABLED}"
-
-          for i in 1 2; do
-            echo "🔁 Crawler attempt ${i}/2"
-            if timeout 18m uv run python -m trendradar 2>&1 | tee -a logs/crawler.log; then
-              echo "✅ Realtime crawler finished"
-              exit 0
-            fi
-            echo "⚠️ Crawler attempt ${i}/2 failed" | tee -a logs/error.log
-            if [ "$i" = "1" ]; then
-              echo "⏳ Waiting ${RETRY_SLEEP_SECONDS}s before retry..."
-              sleep "${RETRY_SLEEP_SECONDS}"
-            fi
-          done
-
-          echo "❌ Realtime crawler failed after retries" | tee -a logs/error.log
-          exit 1
-
-      # 保存去重缓存与日志，便于下次 20 分钟检查时跳过已推送内容。
-      - name: Save realtime state
+      - name: Persist output cache
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            cache
-            logs
-          key: realtime-state-${{ github.ref_name }}-${{ github.run_id }}
-
-      # --------------------------------------------------------------------------------
-      # ☁️ CLOUDFLARE PAGES DEPLOY / 部署到 Cloudflare Pages（可选）
-      # --------------------------------------------------------------------------------
-      - name: Check Cloudflare config
-        if: success()
-        id: cf_check
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
         run: |
-          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$CLOUDFLARE_PROJECT_NAME" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "✅ 检测到 Cloudflare 配置，准备部署到 Cloudflare Pages"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update trendradar output cache [skip ci]"
+            git pull --rebase --autostash || true
+            git push || true
           else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ 未配置 Cloudflare Secrets，跳过 Cloudflare Pages 部署"
+            echo "No output cache changes to commit."
           fi
-
-      - name: Prepare Cloudflare Pages assets
-        if: success() && steps.cf_check.outputs.enabled == 'true'
-        run: |
-          if [ ! -f index.html ]; then
-            echo "❌ 未找到 index.html，请确认爬虫已生成网页报告"
-            exit 1
-          fi
-          rm -rf cloudflare_dist
-          mkdir -p cloudflare_dist
-          cp index.html cloudflare_dist/index.html
-
-      - name: Deploy to Cloudflare Pages
-        if: success() && steps.cf_check.outputs.enabled == 'true'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy cloudflare_dist --project-name=${{ secrets.CLOUDFLARE_PROJECT_NAME }}
-
-      # --------------------------------------------------------------------------------
-      # 🚨 FAILURE NOTICE / 失败通知
-      # --------------------------------------------------------------------------------
-      - name: Notify Telegram on failure
-        if: failure()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
-          TELEGRAM_CHANNEL_CHAT_ID: ${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          WORKFLOW: ${{ github.workflow }}
-        run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "ℹ️ TELEGRAM_BOT_TOKEN is empty, skip failure notification"
-            exit 0
-          fi
-
-          MESSAGE="🚨 GitHub Actions 运行失败%0A项目：${REPO}%0A工作流：${WORKFLOW}%0A查看日志：https://github.com/${REPO}/actions/runs/${RUN_ID}"
-
-          for CHAT_ID in "$TELEGRAM_GROUP_CHAT_ID" "$TELEGRAM_CHANNEL_CHAT_ID"; do
-            if [ -n "$CHAT_ID" ]; then
-              curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -d "chat_id=${CHAT_ID}" \
-                -d "text=${MESSAGE}" \
-                -d "disable_web_page_preview=true" || true
-            fi
-          done
