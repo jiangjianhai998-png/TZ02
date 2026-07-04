@@ -31,7 +31,7 @@ class AIClient:
                 - FALLBACK_MODELS: 备用模型列表（可选）
         """
         self.model = config.get("MODEL", "deepseek/deepseek-chat")
-        self.api_key = config.get("API_KEY") or os.environ.get("AI_API_KEY", "")
+        self.api_key = config.get("API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "") or os.environ.get("AI_API_KEY", "")
         self.api_base = config.get("API_BASE", "")
         self.temperature = config.get("TEMPERATURE", 1.0)
         self.max_tokens = config.get("MAX_TOKENS", 5000)

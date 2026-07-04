@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -48,6 +49,19 @@ def _get_env_int_or_none(key: str) -> Optional[int]:
 def _get_env_str(key: str, default: str = "") -> str:
     """从环境变量获取字符串值"""
     return os.environ.get(key, "").strip() or default
+
+
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def _resolve_config_str(value: Any, default: str = "") -> str:
+    """解析配置里的字符串，支持 ${ENV_NAME}，未设置时返回空字符串，避免把占位符当成真实配置。"""
+    if value is None:
+        return default
+    resolved = os.path.expandvars(str(value)).strip()
+    if _ENV_PLACEHOLDER_RE.search(resolved):
+        return default
+    return resolved
 
 
 def _load_app_config(config_data: Dict) -> Dict:
@@ -268,8 +282,16 @@ def _load_ai_config(config_data: Dict) -> Dict:
     return {
         # LiteLLM 核心配置
         "MODEL": _get_env_str("AI_MODEL") or ai_config.get("model", ""),
-        "API_KEY": _get_env_str("AI_API_KEY") or ai_config.get("api_key", ""),
-        "API_BASE": _get_env_str("AI_API_BASE") or ai_config.get("api_base", ""),
+        "API_KEY": (
+            _get_env_str("DEEPSEEK_API_KEY")
+            or _get_env_str("AI_API_KEY")
+            or _resolve_config_str(ai_config.get("api_key", ""))
+        ),
+        "API_BASE": (
+            _get_env_str("DEEPSEEK_API_BASE")
+            or _get_env_str("AI_API_BASE")
+            or _resolve_config_str(ai_config.get("api_base", ""))
+        ),
 
         # 生成参数
         "TIMEOUT": timeout_env if timeout_env is not None else ai_config.get("timeout", 120),
@@ -423,8 +445,8 @@ def _load_webhook_config(config_data: Dict) -> Dict:
         "WEWORK_WEBHOOK_URL": _get_env_str("WEWORK_WEBHOOK_URL") or wework.get("webhook_url", ""),
         "WEWORK_MSG_TYPE": _get_env_str("WEWORK_MSG_TYPE") or wework.get("msg_type", "markdown"),
         # Telegram
-        "TELEGRAM_BOT_TOKEN": _get_env_str("TELEGRAM_BOT_TOKEN") or telegram.get("bot_token", ""),
-        "TELEGRAM_CHAT_ID": _get_env_str("TELEGRAM_CHAT_ID") or telegram.get("chat_id", ""),
+        "TELEGRAM_BOT_TOKEN": _get_env_str("TELEGRAM_BOT_TOKEN") or _resolve_config_str(telegram.get("bot_token", "")),
+        "TELEGRAM_CHAT_ID": _get_env_str("TELEGRAM_CHAT_ID") or _resolve_config_str(telegram.get("chat_id", "")),
         # 邮件
         "EMAIL_FROM": _get_env_str("EMAIL_FROM") or email.get("from", ""),
         "EMAIL_PASSWORD": _get_env_str("EMAIL_PASSWORD") or email.get("password", ""),

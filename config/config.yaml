@@ -117,14 +117,6 @@ rss:
     name: CoinDesk
     url: https://www.coindesk.com/arc/outboundfeeds/rss/
     max_age_days: 2
-  - id: openai-blog
-    name: OpenAI Blog
-    url: https://openai.com/news/rss.xml
-    max_age_days: 3
-  - id: google-ai-blog
-    name: Google AI Blog
-    url: https://blog.google/technology/ai/rss/
-    max_age_days: 3
 report:
   mode: incremental
   display_mode: keyword
@@ -137,7 +129,7 @@ filter:
 ai_filter:
   batch_size: 10
   batch_interval: 0
-  min_score: 0.65
+  min_score: 0.80
   reclassify_threshold: 0.58
   prompt_file: prompt.txt
   extract_prompt_file: extract_prompt.txt
@@ -156,10 +148,11 @@ display:
     ai_analysis: true
   standalone:
     platforms:
-    - zhihu
-    - wallstreetcn-hot
+    - bilibili-hot-search
+    - douyin
+    - weibo
     rss_feeds: []
-    max_items: 20
+    max_items: 30
 notification:
   enabled: true
   channels:
@@ -171,8 +164,8 @@ notification:
       webhook_url: ''
       msg_type: markdown
     telegram:
-      bot_token: ${TELEGRAM_BOT_TOKEN};${TELEGRAM_BOT_TOKEN}
-      chat_id: ${TELEGRAM_GROUP_CHAT_ID};${TELEGRAM_CHANNEL_CHAT_ID}
+      bot_token: ${TELEGRAM_BOT_TOKEN}
+      chat_id: ${TELEGRAM_CHAT_ID}
     email:
       from: ''
       password: ''
@@ -210,20 +203,20 @@ storage:
     enabled: false
     days: 7
 ai:
-  model: deepseek/deepseek-v4-flash
-  api_key: ${AI_API_KEY}
-  api_base: ''
-  timeout: 120
+  model: deepseek/deepseek-chat
+  api_key: ${DEEPSEEK_API_KEY}
+  api_base: https://api.deepseek.com
+  timeout: 180
   temperature: 0.25
   max_tokens: 2500
-  num_retries: 1
+  num_retries: 2
   fallback_models: []
 ai_analysis:
   enabled: true
   language: Chinese
   prompt_file: ai_analysis_prompt.txt
   mode: follow_report
-  max_news_for_analysis: 100
+  max_news_for_analysis: 80
   include_rss: true
   include_standalone: false
   include_rank_timeline: true

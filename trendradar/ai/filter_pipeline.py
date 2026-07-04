@@ -6,6 +6,7 @@ AI 筛选流水线
 标签管理 → 待分类新闻收集 → 批量 AI 分类 → 结果保存 → 报告数据转换
 """
 
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
@@ -16,6 +17,47 @@ from trendradar.utils.time import (
     is_within_days,
 )
 
+
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_NON_WORD_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+_SPORTS_RE = re.compile(r"nba|篮球|足球|英超|西甲|意甲|德甲|法甲|欧冠|世界杯|欧洲杯|进球|绝杀|集锦|赛果|比分|首发|红牌|黄牌|var|highlights?|recap|match|final", re.I)
+_VIDEO_RE = re.compile(r"视频|短视频|集锦|精彩|回放|录像|clip|shorts?|video|highlights?|recap", re.I)
+_IGAMING_RE = re.compile(r"博彩|赌场|牌照|监管|gaming commission|igaming|betting|gambling|casino|sportsbook|aml|kyc|license|licence|compliance", re.I)
+_POKER_RE = re.compile(r"德州扑克|扑克|wsop|triton|wpt|ept|poker|high roller|final table", re.I)
+_RISK_RE = re.compile(r"诈骗|反赌|处罚|洗钱|非法|成瘾|跑路|冻结|监管处罚|scam|fraud|fine|penalty", re.I)
+_LOW_QUALITY_RE = re.compile(r"广告|优惠|送彩金|下注|盘口|赔率|预测|带单|开户链接|bet now|odds|promo|bonus", re.I)
+
+
+def _normalize_event_title(title: str) -> str:
+    """Normalize title so the same event is only pushed once across sources/tags."""
+    value = (title or "").lower()
+    value = re.sub(r"https?://\S+", "", value)
+    value = re.sub(r"\b\d{1,2}:\d{2}\b", "", value)
+    value = _NON_WORD_RE.sub("", value)
+    return value[:80]
+
+
+def _enterprise_score(title: str, source_name: str = "", base_score: float = 0) -> float:
+    """TZ02 V3 local ranking score. AI relevance remains primary; this boosts Chinese/video/sports/iGaming priorities."""
+    text = f"{title or ''} {source_name or ''}"
+    score = float(base_score or 0) * 100 if float(base_score or 0) <= 1 else float(base_score or 0)
+    if _CJK_RE.search(text):
+        score += 10
+    if _VIDEO_RE.search(text):
+        score += 15
+    if _SPORTS_RE.search(text):
+        score += 20
+    if _IGAMING_RE.search(text):
+        score += 15
+    if _POKER_RE.search(text):
+        score += 12
+    if _RISK_RE.search(text):
+        score += 10
+    if _LOW_QUALITY_RE.search(text):
+        score -= 30
+    return max(0.0, score)
 
 class AIFilterPipeline:
     """AI 筛选流水线，编排标签提取、批量分类、结果存储的完整流程"""
@@ -411,6 +453,7 @@ class AIFilterPipeline:
 
         tag_groups: Dict[str, Dict] = {}
         seen_titles: Dict[str, set] = {}
+        seen_events: set[str] = set()
 
         for r in raw_results:
             tag_name = r["tag"]
@@ -430,9 +473,21 @@ class AIFilterPipeline:
                 seen_titles[tag_name] = set()
 
             title = r["title"]
+            normalized_event = _normalize_event_title(title)
             if title in seen_titles[tag_name]:
                 continue
+            # V3 Enterprise: cross-tag/cross-source event dedupe. Same event should not flood Telegram.
+            if normalized_event and normalized_event in seen_events:
+                continue
             seen_titles[tag_name].add(title)
+            if normalized_event:
+                seen_events.add(normalized_event)
+
+            enterprise_score = _enterprise_score(
+                title,
+                r.get("source_name", ""),
+                r.get("relevance_score", 0),
+            )
 
             tag_groups[tag_name]["items"].append({
                 "title": title,
@@ -446,9 +501,21 @@ class AIFilterPipeline:
                 "last_time": r.get("last_time", ""),
                 "count": r.get("count", 1),
                 "relevance_score": r.get("relevance_score", 0),
+                "enterprise_score": enterprise_score,
                 "source_type": r.get("source_type", "hotlist"),
             })
             tag_groups[tag_name]["count"] += 1
+
+        # V3 Enterprise: rank items inside every tag before slicing downstream.
+        for group in tag_groups.values():
+            group["items"].sort(
+                key=lambda item: (
+                    -float(item.get("enterprise_score", 0) or 0),
+                    int(item.get("rank", 9999) or 9999),
+                    -int(item.get("count", 1) or 1),
+                    item.get("title", ""),
+                )
+            )
 
         if self._priority_sort_enabled:
             sorted_tags = sorted(
@@ -568,6 +635,7 @@ class AIFilterPipeline:
                     "is_new": is_new,
                     "time_display": time_display,
                     "matched_keyword": tag_name,
+                    "enterprise_score": item.get("enterprise_score", 0),
                 }
 
                 if source_type == "rss":
@@ -576,6 +644,7 @@ class AIFilterPipeline:
                     hotlist_titles.append(title_entry)
 
             if hotlist_titles:
+                hotlist_titles.sort(key=lambda x: (-float(x.get("enterprise_score", 0) or 0), x.get("title", "")))
                 if self._max_news > 0:
                     hotlist_titles = hotlist_titles[:self._max_news]
                 hotlist_stats.append({
@@ -586,6 +655,7 @@ class AIFilterPipeline:
                 })
 
             if rss_titles:
+                rss_titles.sort(key=lambda x: (-float(x.get("enterprise_score", 0) or 0), x.get("title", "")))
                 if self._max_news > 0:
                     rss_titles = rss_titles[:self._max_news]
                 rss_stats.append({
