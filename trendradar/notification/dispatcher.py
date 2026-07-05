@@ -563,13 +563,27 @@ class NotificationDispatcher:
         telegram_chat_ids = parse_multi_account_config(self.config["TELEGRAM_CHAT_ID"])
 
         if not telegram_tokens or not telegram_chat_ids:
+            print("❌ Telegram 配置缺失：TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID 为空，跳过 Telegram 推送")
             return False
 
-        # Telegram 常见用法：一个 Bot Token 同时推送到多个 chat_id（群组 + 频道）。
-        # 旧逻辑要求 token 数量必须和 chat_id 数量完全一致，导致 GitHub Actions 中
-        # TELEGRAM_BOT_TOKEN=单个值、TELEGRAM_CHAT_ID=群组;频道 时整个 Telegram 渠道被跳过。
+        # Telegram 常见用法：
+        # 1) 一个 Bot Token -> 多个 chat_id（群组 + 频道），需要复制 token 后逐个发送；
+        # 2) 多个 Bot Token -> 一个 chat_id，也允许复制 chat_id；
+        # 3) 多个 Bot Token -> 多个 chat_id，数量一致时逐一配对。
+        # 这样不会因为 token/chat_id 数量不一致而直接跳过整个 Telegram 渠道。
         if len(telegram_tokens) == 1 and len(telegram_chat_ids) > 1:
             telegram_tokens = telegram_tokens * len(telegram_chat_ids)
+        elif len(telegram_chat_ids) == 1 and len(telegram_tokens) > 1:
+            telegram_chat_ids = telegram_chat_ids * len(telegram_tokens)
+
+        if len(telegram_tokens) != len(telegram_chat_ids):
+            pair_count = min(len(telegram_tokens), len(telegram_chat_ids))
+            print(
+                f"⚠️ Telegram 配置数量不一致：Bot Token 数量({len(telegram_tokens)})，"
+                f"Chat ID 数量({len(telegram_chat_ids)})，将只发送前 {pair_count} 组"
+            )
+            telegram_tokens = telegram_tokens[:pair_count]
+            telegram_chat_ids = telegram_chat_ids[:pair_count]
 
         valid, count = validate_paired_configs(
             {"bot_token": telegram_tokens, "chat_id": telegram_chat_ids},
@@ -583,9 +597,7 @@ class NotificationDispatcher:
         telegram_chat_ids = telegram_chat_ids[: len(telegram_tokens)]
 
         results = []
-        for i in range(len(telegram_tokens)):
-            token = telegram_tokens[i]
-            chat_id = telegram_chat_ids[i]
+        for i, (token, chat_id) in enumerate(zip(telegram_tokens, telegram_chat_ids)):
             if token and chat_id:
                 account_label = f"账号{i+1}" if len(telegram_tokens) > 1 else ""
                 result = send_to_telegram(
