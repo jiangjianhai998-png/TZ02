@@ -4,6 +4,10 @@
     "6ed57ce5b7c84ab0": [],
     "e3149f3e7297dae7": []
   },
+  "legacy_buttons_cleared": {
+    "-1003976472239:15": 1783282971,
+    "-1003976472239:16": 1783282906
+  },
   "likes": {
     "2b60c4ffcaae0591": {
       "updated_at": 1783265055,
@@ -25,7 +29,7 @@
       ]
     }
   },
-  "offset": 680119682,
+  "offset": 680119684,
   "pending_comments": {},
   "posts": {},
   "version": 1
