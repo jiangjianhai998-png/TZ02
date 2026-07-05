@@ -8,6 +8,7 @@ Telegram 公开频道卡片包装层。
 - 直链图片优先 sendPhoto，直链视频优先 sendVideo；
 - 非直链媒体保留文字卡片，并提供“短视频/图片”入口；
 - 增加点赞、评论、功能菜单按钮；
+- GitHub Actions 日志输出 Telegram 推送预览，方便远程验证；
 - 私聊完整内部报告不处理，仍保持原样。
 """
 
@@ -121,6 +122,67 @@ def _is_public_telegram_payload(payload: Dict[str, Any]) -> bool:
     if not chat_id:
         return False
     return not _senders._is_telegram_private_target(chat_id)
+
+
+def _mask_chat_id(chat_id: Any) -> str:
+    """日志里隐藏完整 chat_id，只保留可识别尾号。"""
+    raw = str(chat_id or "").strip()
+    if not raw:
+        return "empty"
+    if len(raw) <= 4:
+        return "***"
+    prefix = "-" if raw.startswith("-") else ""
+    return f"{prefix}***{raw[-4:]}"
+
+
+def _url_host(url: str) -> str:
+    """日志只展示 URL 域名，不打印完整链接。"""
+    match = re.match(r"https?://([^/]+)", str(url or ""), flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _preview_text(text: str, max_chars: int = 500) -> str:
+    """生成安全预览：去 HTML、隐藏完整 URL、限制长度。"""
+    preview = _plain_text(text)
+    preview = re.sub(r"https?://[^\s<>'\"]+", "[URL]", preview)
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip() + "..."
+    return preview
+
+
+def _button_preview(reply_markup: Any) -> str:
+    """提取按钮文字，方便日志验证按钮是否存在。"""
+    if not isinstance(reply_markup, dict):
+        return "none"
+    rows = reply_markup.get("inline_keyboard") or []
+    rendered_rows = []
+    for row in rows:
+        labels = [str(button.get("text", "")).strip() for button in row if isinstance(button, dict)]
+        labels = [label for label in labels if label]
+        if labels:
+            rendered_rows.append(" | ".join(labels))
+    return " / ".join(rendered_rows) if rendered_rows else "none"
+
+
+def _log_public_payload_preview(method: str, payload: Dict[str, Any], *, stage: str) -> None:
+    """在 GitHub Actions 日志输出 Telegram 推送预览，不打印 token 和完整 chat_id。"""
+    if not _is_public_telegram_payload(payload):
+        return
+
+    text = str(payload.get("caption") or payload.get("text") or "")
+    media_url = str(payload.get("photo") or payload.get("video") or "")
+    media_host = _url_host(media_url)
+    media_type = "photo" if payload.get("photo") else "video" if payload.get("video") else "text"
+
+    print("\n[TG预览]━━━━━━━━━━━━━━━━━━━━")
+    print(f"[TG预览] stage={stage} method={method} chat={_mask_chat_id(payload.get('chat_id'))} media={media_type}")
+    if media_host:
+        print(f"[TG预览] media_host={media_host}")
+    print(f"[TG预览] buttons={_button_preview(payload.get('reply_markup'))}")
+    print("[TG预览] content_start")
+    print(_preview_text(text))
+    print("[TG预览] content_end")
+    print("[TG预览]━━━━━━━━━━━━━━━━━━━━\n")
 
 
 def _build_inline_keyboard(content: str) -> Dict[str, list]:
@@ -295,6 +357,7 @@ def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
                 media_url = str(url).replace("/sendMessage", f"/{method}")
                 media_kwargs = dict(post_kwargs)
                 media_kwargs["json"] = media_payload
+                _log_public_payload_preview(method, media_payload, stage="media")
                 response = real_post(media_url, *post_args, **media_kwargs)
                 try:
                     result = response.json()
@@ -302,9 +365,10 @@ def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
                     result = {"ok": False}
                 if response.status_code == 200 and result.get("ok"):
                     return response
-                # 媒体直链不可用时，自动退回文字卡片，避免整条漏发。
+                print(f"[TG预览] 媒体发送失败，自动退回文字卡片。status={response.status_code}")
 
             post_kwargs["json"] = _patch_public_payload(payload)
+            _log_public_payload_preview("sendMessage", post_kwargs["json"], stage="text")
         return real_post(url, *post_args, **post_kwargs)
 
     _senders.requests.post = patched_post
