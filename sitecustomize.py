@@ -56,9 +56,6 @@ def _is_public_telegram_target(chat_id: str) -> bool:
         return False
 
     lowered = chat_id_str.lower()
-    # Channel usernames are usually used as @channel_name in TELEGRAM_CHAT_ID.
-    # The original sender only treated negative numeric IDs as public, so @channels
-    # were mistakenly handled as private debug targets and leaked batch/stat/error lines.
     if chat_id_str.startswith("@"):
         return True
     if lowered.startswith("t.me/") or lowered.startswith("https://t.me/"):
@@ -93,14 +90,12 @@ def _extract_public_item(raw_line: str) -> Optional[Dict[str, str]]:
     if not re.match(r"^\s*\d+[\.|、)]\s+", plain):
         return None
 
-    # Source and time come from the plain line because raw line may contain HTML links.
     source_match = re.match(r"^\s*\d+[\.|、)]\s*\[([^\]]+)\]", plain)
     source = source_match.group(1).strip() if source_match else "热点"
 
     time_match = re.search(r"[-–—]\s*(\d{1,2}:\d{2})\s*$", plain)
     item_time = time_match.group(1) if time_match else ""
 
-    # Preserve original HTML anchor in the title when present.
     title_html = re.sub(r"^\s*\d+[\.|、)]\s*", "", raw_line.strip())
     title_html = re.sub(r"^\[[^\]]+\]\s*", "", title_html).strip()
     title_html = title_html.replace("🆕", "").strip()
@@ -127,18 +122,13 @@ def _compose_public_post(item: Dict[str, str], max_bytes: int = 4000) -> str:
     if len(post.encode("utf-8")) <= max_bytes:
         return post
 
-    # Fallback: remove HTML and trim safely.
     plain_post = _plain(post)
     encoded = plain_post.encode("utf-8")[: max(200, max_bytes - 20)]
     return encoded.decode("utf-8", errors="ignore").rstrip() + "…"
 
 
 def _public_micro_posts(content: str, *, batch_index: int, batch_total: int, max_bytes: int = 4000) -> List[str]:
-    """Turn system report blocks into clean channel tweets.
-
-    Public Telegram channels should receive only user-facing news posts. Batch
-    headers, statistics, AI errors, and crawler diagnostics stay out of the channel.
-    """
+    """Turn system report blocks into clean channel tweets."""
     items: List[Dict[str, str]] = []
     for raw_line in str(content or "").splitlines():
         item = _extract_public_item(raw_line)
@@ -148,7 +138,6 @@ def _public_micro_posts(content: str, *, batch_index: int, batch_total: int, max
     if items:
         return [_compose_public_post(item, max_bytes=max_bytes) for item in items]
 
-    # If we cannot identify individual items, still remove all internal lines.
     clean_lines = []
     for raw_line in str(content or "").splitlines():
         line = raw_line.strip()
@@ -182,23 +171,20 @@ def _like_reply_markup(chat_id: str, text: str) -> Dict[str, Any]:
     }
 
 
-def _patch_requests_post() -> None:
-    """Attach like/menu buttons at sendMessage time for public Telegram posts.
-
-    Relying only on the interaction worker to edit channel posts later can leave
-    a visible delay or no button if the worker has not started yet. This patch
-    makes the main push include the like button immediately.
-    """
+def _patch_requests_post() -> bool:
+    """Attach like/menu buttons at sendMessage time after requests is fully loaded."""
     global _REQUESTS_PATCHED
     if _REQUESTS_PATCHED:
-        return
+        return True
 
-    try:
-        import requests
-    except Exception:
-        return
+    requests_module = sys.modules.get("requests")
+    if requests_module is None or not hasattr(requests_module, "post"):
+        return False
 
-    original_post = requests.post
+    original_post = requests_module.post
+    if getattr(original_post, "_tz02_like_patch", False):
+        _REQUESTS_PATCHED = True
+        return True
 
     def _patched_post(url, *args, **kwargs):
         try:
@@ -211,27 +197,30 @@ def _patch_requests_post() -> None:
             ):
                 chat_id = str(payload.get("chat_id") or "").strip()
                 text = str(payload.get("text") or "").strip()
+                visible_lines = [line for line in text.splitlines() if line.strip()]
                 if (
                     _is_public_telegram_target(chat_id)
                     and text
                     and "reply_markup" not in payload
-                    and not all(_is_internal_line(line) for line in text.splitlines() if line.strip())
+                    and not all(_is_internal_line(line) for line in visible_lines)
                 ):
-                    payload = dict(payload)
-                    payload["reply_markup"] = _like_reply_markup(chat_id, text)
-                    kwargs["json"] = payload
+                    patched_payload = dict(payload)
+                    patched_payload["reply_markup"] = _like_reply_markup(chat_id, text)
+                    kwargs["json"] = patched_payload
         except Exception as exc:
             print(f"[TZ02] Telegram like button payload patch skipped: {exc}")
         return original_post(url, *args, **kwargs)
 
-    requests.post = _patched_post
+    _patched_post._tz02_like_patch = True
+    requests_module.post = _patched_post
     _REQUESTS_PATCHED = True
     print("[TZ02] Telegram like button payload patch enabled")
+    return True
 
 
 def _patch_senders(module: Any) -> None:
     global _PATCHED
-    if _PATCHED or not module:
+    if not module:
         return
 
     original_get_private_ids = getattr(module, "_get_telegram_private_chat_ids", None)
@@ -241,33 +230,32 @@ def _patch_senders(module: Any) -> None:
         private_ids = set(original_get_private_ids() if original_get_private_ids else [])
         if chat_id_str in private_ids:
             return True
-        # @channel_username and -100... IDs are public Telegram targets.
-        # Only plain positive numeric user IDs are treated as private.
         return bool(chat_id_str) and not _is_public_telegram_target(chat_id_str)
 
     module._is_telegram_private_target = _is_telegram_private_target
     module._beautify_public_telegram_batches = _public_micro_posts
     module._beautify_public_telegram_batch = _public_micro_batch
     _patch_requests_post()
+    if not _PATCHED:
+        print("[TZ02] Telegram public channel micro-post patch enabled")
     _PATCHED = True
-    print("[TZ02] Telegram public channel micro-post patch enabled")
+
+
+def _try_patch_runtime() -> None:
+    _patch_requests_post()
+    senders = sys.modules.get("trendradar.notification.senders")
+    if senders is not None:
+        _patch_senders(senders)
 
 
 def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
     module = _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
     try:
-        _patch_requests_post()
-        senders = sys.modules.get("trendradar.notification.senders")
-        if senders is not None:
-            _patch_senders(senders)
+        _try_patch_runtime()
     except Exception as exc:
         print(f"[TZ02] sitecustomize patch skipped: {exc}")
     return module
 
 
 builtins.__import__ = _patched_import
-_patch_requests_post()
-
-# If senders was imported before this hook was installed, patch it immediately.
-if "trendradar.notification.senders" in sys.modules:
-    _patch_senders(sys.modules["trendradar.notification.senders"])
+_try_patch_runtime()
