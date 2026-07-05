@@ -18,10 +18,12 @@
 import smtplib
 import time
 import json
+import re
 from datetime import datetime
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import unescape
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -63,6 +65,42 @@ def _render_ai_analysis(ai_analysis: Any, channel: str) -> str:
         return renderer(ai_analysis)
     except ImportError:
         return ""
+
+
+def _telegram_plain_fallback(content: str) -> str:
+    """
+    Telegram HTML 解析失败时的纯文本兜底。
+
+    原推送内容仍优先按 HTML 发送；只有 Telegram 返回解析错误时，
+    才使用这个函数去掉 HTML 标签，避免整轮推送失败。
+    """
+    if not content:
+        return ""
+
+    text = unescape(content)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    # 清理多余空行，避免兜底内容太散。
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text or strip_markdown(content)
+
+
+def _telegram_should_fallback(status_code: int, result: Dict[str, Any]) -> bool:
+    """判断 Telegram 是否因为 HTML/实体解析问题需要纯文本重试。"""
+    description = str(result.get("description", "")).lower()
+    if status_code == 400 and any(
+        keyword in description
+        for keyword in (
+            "can't parse entities",
+            "unsupported start tag",
+            "can't find end tag",
+            "entity",
+            "parse",
+        )
+    ):
+        return True
+    return False
 
 
 # === SMTP 邮件配置 ===
@@ -510,6 +548,9 @@ def send_to_telegram(
     Returns:
         bool: 发送是否成功
     """
+    if split_content_func is None:
+        raise ValueError("split_content_func is required")
+
     headers = {"Content-Type": "application/json"}
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
@@ -559,23 +600,59 @@ def send_to_telegram(
             response = requests.post(
                 url, headers=headers, json=payload, proxies=proxies, timeout=30
             )
-            if response.status_code == 200:
+
+            try:
                 result = response.json()
-                if result.get("ok"):
-                    print(f"{log_prefix}第 {i}/{len(batches)} 批次发送成功 [{report_type}]")
-                    # 批次间间隔
+            except ValueError:
+                result = {"ok": False, "description": response.text}
+
+            if response.status_code == 200 and result.get("ok"):
+                print(f"{log_prefix}第 {i}/{len(batches)} 批次发送成功 [{report_type}]")
+                # 批次间间隔
+                if i < len(batches):
+                    time.sleep(batch_interval)
+                continue
+
+            # Telegram 对 HTML 很严格：只要一个标签/实体不合法就会拒绝整条消息。
+            # 这里自动降级成纯文本重试一次，避免因为单条内容格式问题导致整轮推送失败。
+            if _telegram_should_fallback(response.status_code, result):
+                print(
+                    f"{log_prefix}第 {i}/{len(batches)} 批次 HTML 解析失败，自动改用纯文本重试 [{report_type}]，错误：{result.get('description')}"
+                )
+                fallback_payload = {
+                    "chat_id": chat_id,
+                    "text": _telegram_plain_fallback(batch_content),
+                    "disable_web_page_preview": True,
+                }
+                retry_response = requests.post(
+                    url, headers=headers, json=fallback_payload, proxies=proxies, timeout=30
+                )
+                try:
+                    retry_result = retry_response.json()
+                except ValueError:
+                    retry_result = {"ok": False, "description": retry_response.text}
+
+                if retry_response.status_code == 200 and retry_result.get("ok"):
+                    print(f"{log_prefix}第 {i}/{len(batches)} 批次纯文本重试成功 [{report_type}]")
                     if i < len(batches):
                         time.sleep(batch_interval)
-                else:
-                    print(
-                        f"{log_prefix}第 {i}/{len(batches)} 批次发送失败 [{report_type}]，错误：{result.get('description')}"
-                    )
-                    return False
-            else:
+                    continue
+
                 print(
-                    f"{log_prefix}第 {i}/{len(batches)} 批次发送失败 [{report_type}]，状态码：{response.status_code}"
+                    f"{log_prefix}第 {i}/{len(batches)} 批次纯文本重试失败 [{report_type}]，状态码：{retry_response.status_code}，错误：{retry_result.get('description')}"
                 )
                 return False
+
+            if response.status_code == 200:
+                print(
+                    f"{log_prefix}第 {i}/{len(batches)} 批次发送失败 [{report_type}]，错误：{result.get('description')}"
+                )
+                return False
+
+            print(
+                f"{log_prefix}第 {i}/{len(batches)} 批次发送失败 [{report_type}]，状态码：{response.status_code}，响应：{result.get('description')}"
+            )
+            return False
         except Exception as e:
             print(f"{log_prefix}第 {i}/{len(batches)} 批次发送出错 [{report_type}]：{e}")
             return False
