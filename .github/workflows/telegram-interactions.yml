@@ -3,24 +3,26 @@ name: Telegram Interactions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    # GitHub Actions 最小建议间隔约 5 分钟；脚本内部会长轮询，让按钮尽量接近实时响应。
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: telegram-interactions
+  group: tz02-telegram-interactions
   cancel-in-progress: true
 
 jobs:
-  listen:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 6
     env:
       TZ: Asia/Singapore
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TG_INTERACTIONS_RUN_SECONDS: "1200"
-      TG_INTERACTIONS_POLL_TIMEOUT: "20"
+      TELEGRAM_INTERACTION_STATE: data/telegram_interactions_state.json
+      TELEGRAM_INTERACTION_POLL_SECONDS: "260"
+      TELEGRAM_INTERACTION_POLL_TIMEOUT: "20"
 
     steps:
       - name: Checkout repository
@@ -33,13 +35,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
+      - name: Handle Telegram likes and comments
+        run: python -m trendradar.notification.telegram_interactions
 
-      - name: Install dependencies
-        run: uv sync --no-cache --index-url https://pypi.org/simple || (sleep 10 && uv sync --no-cache --index-url https://pypi.org/simple)
-
-      - name: Run Telegram interaction listener
-        run: uv run python trendradar/telegram_interactions.py
+      - name: Persist Telegram interaction state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/telegram_interactions_state.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update telegram interaction state [skip ci]"
+            git pull --rebase --autostash || true
+            git push || true
+          else
+            echo "No Telegram interaction state changes to commit."
+          fi
