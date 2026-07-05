@@ -35,7 +35,7 @@ def _now() -> int:
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "comments": {}, "pending_comments": {}}
+        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "comments": {}, "pending_comments": {}, "posts": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -45,6 +45,7 @@ def _load_state(path: Path) -> Dict[str, Any]:
     data.setdefault("likes", {})
     data.setdefault("comments", {})
     data.setdefault("pending_comments", {})
+    data.setdefault("posts", {})
     return data
 
 
@@ -93,6 +94,17 @@ def _safe_name(user: Dict[str, Any]) -> str:
 def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
     chat = message.get("chat") or {}
     return chat.get("id"), message.get("message_id")
+
+
+def _message_text(message: Dict[str, Any]) -> str:
+    return str((message or {}).get("text") or (message or {}).get("caption") or "").strip()
+
+
+def _post_id_for_message(message: Dict[str, Any]) -> str:
+    """为频道帖子生成稳定且短的 post_id，保证 callback_data 不超长。"""
+    chat_id, message_id = _message_ref(message)
+    raw = f"{chat_id}:{message_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
 def _message_comment_url(message: Dict[str, Any]) -> str:
@@ -188,6 +200,33 @@ def _answer(
     _api(token, "answerCallbackQuery", payload)
 
 
+def _handle_channel_post(token: str, state: Dict[str, Any], message: Dict[str, Any]) -> bool:
+    """给频道新帖子自动补上点赞/菜单按钮。
+
+    Telegram 原生评论区由“频道 + 绑定讨论组”自动显示；这里仅补自定义点赞按钮。
+    """
+    chat_id, message_id = _message_ref(message)
+    if not chat_id or not message_id or not _message_text(message):
+        return False
+
+    post_id = _post_id_from_message(message) or _post_id_for_message(message)
+    post_key = f"{chat_id}:{message_id}"
+    posts = state.setdefault("posts", {})
+    existing = posts.get(post_key) or {}
+
+    # 每次收到频道帖子都尝试刷新按钮，确保新发推文立刻出现点赞按钮。
+    _edit_buttons(token, message, post_id, state)
+    posts[post_key] = {
+        "post_id": post_id,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "updated_at": _now(),
+    }
+    if not existing:
+        print(f"[TG互动] 频道帖子已添加点赞按钮 post={post_id} chat={chat_id} message={message_id}")
+    return True
+
+
 def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]) -> bool:
     callback_id = str(callback.get("id") or "")
     data = str(callback.get("data") or "")
@@ -197,7 +236,7 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
         return False
 
     action, _, post_id = data.partition(":")
-    post_id = post_id or "default"
+    post_id = post_id or _post_id_for_message(message)
     user_hash = _user_key(token, user.get("id"))
 
     if action == "tr_like":
@@ -238,7 +277,7 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
 def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) -> bool:
     user = message.get("from") or {}
     chat = message.get("chat") or {}
-    text = str(message.get("text") or message.get("caption") or "").strip()
+    text = _message_text(message)
     if user.get("is_bot") or not user.get("id") or not chat.get("id") or not text:
         return False
 
@@ -308,7 +347,7 @@ def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> 
         result = _api(token, "getUpdates", {
             "offset": int(state.get("offset") or 0),
             "timeout": poll_timeout,
-            "allowed_updates": ["callback_query", "message"],
+            "allowed_updates": ["callback_query", "message", "channel_post"],
         }, timeout=poll_timeout + 10)
         if not result.get("ok"):
             time.sleep(5)
@@ -321,6 +360,8 @@ def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> 
                 changed = True
             if "callback_query" in update:
                 changed = _handle_callback(token, state, update["callback_query"]) or changed
+            elif "channel_post" in update:
+                changed = _handle_channel_post(token, state, update["channel_post"]) or changed
             elif "message" in update:
                 changed = _handle_message(token, state, update["message"]) or changed
             if changed:
