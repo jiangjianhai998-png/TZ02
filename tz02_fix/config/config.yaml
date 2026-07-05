@@ -1,0 +1,260 @@
+app:
+  timezone: Asia/Singapore
+  show_version_update: false
+schedule:
+  enabled: true
+  preset: always_on
+platforms:
+  enabled: true
+  api_url: ''
+  sources:
+  - id: toutiao
+    name: 今日头条
+    expected_domain: toutiao.com
+  - id: baidu
+    name: 百度热搜
+    expected_domain: baidu.com
+  - id: wallstreetcn-hot
+    name: 华尔街见闻
+    expected_domain: wallstreetcn.com
+  - id: thepaper
+    name: 澎湃新闻
+    expected_domain: thepaper.cn
+  - id: bilibili-hot-search
+    name: bilibili 热搜
+    expected_domain: bilibili.com
+  - id: cls-hot
+    name: 财联社热门
+    expected_domain: cls.cn
+  - id: weibo
+    name: 微博
+    expected_domain: weibo.com
+  - id: douyin
+    name: 抖音
+    expected_domain: douyin.com
+  - id: zhihu
+    name: 知乎
+    expected_domain: zhihu.com
+rss:
+  enabled: true
+  freshness_filter:
+    enabled: true
+    max_age_days: 2
+  feeds:
+  - id: espn-nba
+    name: ESPN NBA
+    url: https://www.espn.com/espn/rss/nba/news
+    max_age_days: 1
+  - id: nba-official
+    name: NBA Official News
+    url: https://www.nba.com/news/rss.xml
+    max_age_days: 1
+  - id: hoopsrumors
+    name: Hoops Rumors
+    url: https://www.hoopsrumors.com/feed
+    max_age_days: 1
+  - id: bbc-football
+    name: BBC Football
+    url: https://feeds.bbci.co.uk/sport/football/rss.xml
+    max_age_days: 1
+  - id: guardian-football
+    name: The Guardian Football
+    url: https://www.theguardian.com/football/rss
+    max_age_days: 1
+  - id: sky-sports-football
+    name: Sky Sports Football
+    url: https://www.skysports.com/rss/12040
+    max_age_days: 1
+  - id: uefa-news
+    name: UEFA News
+    url: https://www.uefa.com/rssfeed/news/rss.xml
+    max_age_days: 1
+  - id: pokernews
+    name: PokerNews
+    url: https://www.pokernews.com/rss.php
+    max_age_days: 2
+  - id: cardplayer
+    name: CardPlayer Poker News
+    url: https://www.cardplayer.com/poker-news/rss
+    max_age_days: 2
+  - id: igamingbusiness
+    name: iGaming Business
+    url: https://igamingbusiness.com/feed/
+    max_age_days: 2
+  - id: igamingbusiness-legal
+    name: iGaming Business Legal & Compliance
+    url: https://igamingbusiness.com/topic/legal-compliance/feed/
+    max_age_days: 3
+  - id: sbc-news
+    name: SBC News
+    url: https://sbcnews.co.uk/feed/
+    max_age_days: 2
+  - id: casino-org-news
+    name: Casino.org News
+    url: https://www.casino.org/news/feed/
+    max_age_days: 2
+  - id: cdc-gaming
+    name: CDC Gaming Reports
+    url: https://www.cdcgaming.com/feed/
+    max_age_days: 3
+  - id: gambling-insider
+    name: Gambling Insider
+    url: https://www.gamblinginsider.com/rss.xml
+    max_age_days: 2
+  - id: finextra
+    name: Finextra Payments
+    url: https://www.finextra.com/rss/headlines.aspx
+    max_age_days: 2
+  - id: the-paypers
+    name: The Paypers
+    url: https://thepaypers.com/rss
+    max_age_days: 2
+  - id: pymnts
+    name: PYMNTS
+    url: https://www.pymnts.com/feed/
+    max_age_days: 2
+  - id: coindesk
+    name: CoinDesk
+    url: https://www.coindesk.com/arc/outboundfeeds/rss/
+    max_age_days: 2
+report:
+  mode: incremental
+  display_mode: keyword
+  sort_by_position_first: true
+  rank_threshold: 5
+  max_news_per_keyword: 8
+filter:
+  method: ai
+  priority_sort_enabled: true
+ai_filter:
+  batch_size: 10
+  batch_interval: 0
+  min_score: 0.80
+  reclassify_threshold: 0.58
+  prompt_file: prompt.txt
+  extract_prompt_file: extract_prompt.txt
+  update_tags_prompt_file: update_tags_prompt.txt
+display:
+  region_order:
+  - new_items
+  - rss
+  - hotlist
+  - ai_analysis
+  regions:
+    hotlist: true
+    new_items: true
+    rss: true
+    standalone: false
+    ai_analysis: true
+  standalone:
+    platforms:
+    - bilibili-hot-search
+    - douyin
+    - weibo
+    rss_feeds: []
+    max_items: 30
+notification:
+  enabled: true
+  channels:
+    feishu:
+      webhook_url: ''
+    dingtalk:
+      webhook_url: ''
+    wework:
+      webhook_url: ''
+      msg_type: markdown
+    telegram:
+      bot_token: ${TELEGRAM_BOT_TOKEN}
+      chat_id: ${TELEGRAM_CHAT_ID}
+    email:
+      from: ''
+      password: ''
+      to: ''
+      smtp_server: ''
+      smtp_port: ''
+    ntfy:
+      server_url: https://ntfy.sh
+      topic: ''
+      token: ''
+    bark:
+      url: ''
+    slack:
+      webhook_url: ''
+    generic_webhook:
+      webhook_url: ''
+      payload_template: ''
+storage:
+  backend: auto
+  formats:
+    sqlite: true
+    txt: false
+    html: true
+  local:
+    data_dir: output
+    retention_days: 3
+  remote:
+    retention_days: 3
+    endpoint_url: ''
+    bucket_name: ''
+    access_key_id: ''
+    secret_access_key: ''
+    region: ''
+  pull:
+    enabled: false
+    days: 7
+ai:
+  model: deepseek/deepseek-chat
+  api_key: ${DEEPSEEK_API_KEY}
+  api_base: https://api.deepseek.com
+  timeout: 180
+  temperature: 0.25
+  max_tokens: 2500
+  num_retries: 2
+  fallback_models: []
+ai_analysis:
+  enabled: true
+  language: Chinese
+  prompt_file: ai_analysis_prompt.txt
+  mode: follow_report
+  max_news_for_analysis: 80
+  include_rss: true
+  include_standalone: false
+  include_rank_timeline: true
+ai_translation:
+  enabled: false
+  language: 中文
+  prompt_file: ai_translation_prompt.txt
+  batch_size: 100
+  batch_interval: 2
+  scope:
+    hotlist: false
+    rss: true
+    standalone: true
+advanced:
+  debug: false
+  version_check_url: https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version
+  mcp_version_check_url: https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_mcp
+  configs_version_check_url: https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_configs
+  crawler:
+    request_interval: 200
+    use_proxy: false
+    default_proxy: http://127.0.0.1:10801
+  rss:
+    request_interval: 200
+    timeout: 20
+    use_proxy: false
+    proxy_url: ''
+  weight:
+    rank: 0.6
+    frequency: 0.3
+    hotness: 0.1
+  max_accounts_per_channel: 3
+  batch_size:
+    default: 3500
+    dingtalk: 20000
+    feishu: 30000
+    bark: 4000
+    slack: 3500
+    telegram: 3900
+  batch_send_interval: 0
+  feishu_message_separator: ━━━━━━━━━━━━━━━━
