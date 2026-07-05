@@ -1,6 +1,7 @@
 # coding=utf-8
 from __future__ import annotations
 
+import hashlib
 import re
 from html import unescape
 from typing import Any, Dict, Optional, Tuple
@@ -55,6 +56,11 @@ def _pick_media_url(content: str) -> Tuple[str, str]:
     return ('', '')
 
 
+def _post_id(content: str) -> str:
+    base = _plain_text(content)[:500] or str(content)[:500]
+    return hashlib.sha1(base.encode('utf-8')).hexdigest()[:16]
+
+
 def _is_public_telegram_payload(payload: Dict[str, Any]) -> bool:
     chat_id = str(payload.get('chat_id', '')).strip()
     return bool(chat_id) and not _senders._is_telegram_private_target(chat_id)
@@ -96,13 +102,14 @@ def _log_public_payload_preview(method: str, payload: Dict[str, Any], stage: str
 
 
 def _build_inline_keyboard(content: str) -> Dict[str, list]:
+    post_id = _post_id(content)
     return {
         'inline_keyboard': [
             [
-                {'text': '👍 点赞 0', 'callback_data': 'tr_like'},
-                {'text': '💬 评论 0', 'callback_data': 'tr_comment'},
+                {'text': '👍 点赞 0', 'callback_data': f'tr_like:{post_id}'},
+                {'text': '💬 评论 0', 'callback_data': f'tr_comment:{post_id}'},
             ],
-            [{'text': '☰ 功能菜单', 'callback_data': 'tr_menu'}],
+            [{'text': '☰ 功能菜单', 'callback_data': f'tr_menu:{post_id}'}],
         ]
     }
 
@@ -143,7 +150,7 @@ def _compose_public_card_text(original_text: str, include_media_block: bool) -> 
             parts.append('当前先编辑为自有短文，不把评论按钮跳转到源链接。')
         parts.append('━━━━━━━━━━━━━━')
     parts.extend([
-        '🔥 <b>TrendRadar 热点快报</b>',
+        '🔥 <b>TrendRadar 原创编辑快报</b>',
         '━━━━━━━━━━━━━━',
         '🧠 <b>要点评论</b>',
         f'• 核心看点：{(title or "本条内容具备继续跟进价值")[:80]}',
@@ -152,7 +159,7 @@ def _compose_public_card_text(original_text: str, include_media_block: bool) -> 
         '━━━━━━━━━━━━━━',
         '📝 <b>编辑短文</b>',
         f'这条内容不是简单转发源链接，而是围绕“{(title or "本条热点")[:60]}”做二次整理。',
-        '后续适合剪成自己的短视频文章：标题吸引注意力，正文解释背景、影响和可讨论点。',
+        '我们会把信息提取、压缩、改写成自己的视频文章结构：标题、导语、看点、评论点和互动问题。',
         '━━━━━━━━━━━━━━',
         f'📰 {title}' if title else _plain_text(original_text)[:500],
     ])
@@ -163,12 +170,13 @@ def _patch_public_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not _is_public_telegram_payload(payload):
         return payload
     patched = dict(payload)
-    content = _compose_public_card_text(str(patched.get('text') or patched.get('caption') or ''), True)
+    original_content = str(patched.get('text') or patched.get('caption') or '')
+    content = _compose_public_card_text(original_content, True)
     if 'text' in patched:
         patched['text'] = _truncate_utf8(content, 3900)
     elif 'caption' in patched:
         patched['caption'] = _truncate_utf8(content, 950)
-    patched['reply_markup'] = _build_inline_keyboard(content)
+    patched['reply_markup'] = _build_inline_keyboard(original_content)
     return patched
 
 
