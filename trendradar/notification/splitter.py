@@ -16,34 +16,98 @@ from trendradar.notification.batch import truncate_at_line_boundary
 
 # === 分批安全辅助函数 ===
 
+def _utf8_len(text: str) -> int:
+    """返回字符串的 UTF-8 字节数。"""
+    return len((text or "").encode("utf-8"))
+
+
+def _split_text_by_byte_limit(text: str, max_bytes: int) -> List[str]:
+    """按 UTF-8 字节上限拆分文本，保证不切坏中文/emoji。"""
+    if not text:
+        return []
+    if max_bytes <= 0:
+        return [text]
+
+    chunks: List[str] = []
+    current = ""
+    current_size = 0
+
+    for ch in text:
+        ch_size = _utf8_len(ch)
+        if current and current_size + ch_size > max_bytes:
+            chunks.append(current)
+            current = ch
+            current_size = ch_size
+        else:
+            current += ch
+            current_size += ch_size
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _split_content_by_lines(
     content: str, footer: str, max_bytes: int, base_header: str
 ) -> List[str]:
-    """将超长内容按行边界拆分成多个完整批次（每个批次带 footer）
+    """将超长内容拆分成多个完整批次（每个批次带 footer）。
 
-    不会丢弃任何内容，溢出部分自动分配到后续批次。
-
-    Args:
-        content: 正文内容（不含 footer，可能含 base_header）
-        footer: 尾部内容（更新时间等）
-        max_bytes: 单批次最大字节数
-        base_header: 后续批次的头部
-
-    Returns:
-        完整批次列表（每个元素 = 正文 + footer，大小 ≤ max_bytes）
+    优先按行边界拆分；如果单行本身超过平台限制，则继续按 UTF-8 字节安全拆分，
+    避免 Telegram/ntfy 等渠道因为单条消息超限而发送失败。
     """
-    footer_size = len(footer.encode("utf-8"))
-    result_batches = []
-    lines = content.split("\n")
+    footer_size = _utf8_len(footer)
+    available = max_bytes - footer_size
 
+    # footer 本身异常超限时，只能走最终截断兜底，避免死循环。
+    if available <= 0:
+        return [truncate_at_line_boundary((content or "") + footer, max_bytes)]
+
+    header = base_header or ""
+    if _utf8_len(header) >= available:
+        # 头部太长时截短头部，给正文至少留一部分空间。
+        header = truncate_at_line_boundary(header, max(0, available // 3))
+
+    result_batches: List[str] = []
     current = ""
-    for line in lines:
-        candidate = current + line + "\n"
-        if len(candidate.encode("utf-8")) + footer_size > max_bytes and current.strip():
+
+    def flush_current() -> None:
+        nonlocal current
+        if current.strip():
             result_batches.append(current + footer)
-            current = base_header + line + "\n"
-        else:
-            current = candidate
+        current = ""
+
+    # keepends=True 保留换行，避免拆分后格式挤在一起。
+    for line in (content or "").splitlines(keepends=True):
+        pending = line
+        while pending:
+            current_size = _utf8_len(current)
+            pending_size = _utf8_len(pending)
+
+            # 当前批次放不下整行，且当前已有正文：先结算当前批次。
+            if current.strip() and current_size + pending_size > available:
+                flush_current()
+                current = header
+                current_size = _utf8_len(current)
+
+            remaining = available - current_size
+            if remaining <= 0:
+                # 理论上只会在 header 仍然过长时出现，清空头部兜底。
+                flush_current()
+                current = ""
+                remaining = available
+
+            if _utf8_len(pending) <= remaining:
+                current += pending
+                pending = ""
+            else:
+                # 单行过长：按字节安全拆分，保证不会生成超长消息。
+                chunks = _split_text_by_byte_limit(pending, remaining)
+                if not chunks:
+                    break
+                current += chunks[0]
+                pending = "".join(chunks[1:])
+                flush_current()
+                current = header
 
     if current.strip():
         result_batches.append(current + footer)
@@ -55,17 +119,9 @@ def _safe_append_batch(
     batches: List[str], content: str, footer: str, max_bytes: int,
     base_header: str = ""
 ) -> None:
-    """安全追加批次，超限时按行拆分成多个批次（不丢弃内容）
-
-    Args:
-        batches: 批次列表（原地修改）
-        content: 正文内容（不含 footer）
-        footer: 尾部内容（更新时间等）
-        max_bytes: 最大字节数
-        base_header: 溢出时后续批次的头部
-    """
+    """安全追加批次，超限时拆分成多个批次（不丢弃内容）。"""
     full = content + footer
-    if len(full.encode("utf-8")) <= max_bytes:
+    if _utf8_len(full) <= max_bytes:
         batches.append(full)
         return
 
@@ -73,7 +129,7 @@ def _safe_append_batch(
     if split_batches:
         batches.extend(split_batches)
     else:
-        # 极端情况：单行就超限，强制截断
+        # 极端情况兜底：确保不会发出超限消息。
         batches.append(truncate_at_line_boundary(full, max_bytes))
 
 
@@ -81,41 +137,32 @@ def _safe_new_batch(
     new_content: str, footer: str, max_bytes: int, base_header: str,
     batches: List[str] = None
 ) -> str:
-    """安全创建新批次，超限时将溢出内容拆分到 batches 中，返回最后一段作为 current_batch
+    """安全创建新批次。
 
-    Args:
-        new_content: 新批次完整内容（含 base_header + section_header + ...）
-        footer: 尾部内容
-        max_bytes: 最大字节数
-        base_header: 基础头部
-        batches: 批次列表，溢出部分追加到此（可选）
-
-    Returns:
-        可安全继续追加内容的 current_batch（大小 + footer ≤ max_bytes）
+    如果新内容超限：
+    - 有 batches 时，前面完整批次直接写入 batches，返回最后一段继续追加；
+    - 无 batches 时，返回一个不超限的截断片段作为兜底。
     """
-    if len((new_content + footer).encode("utf-8")) <= max_bytes:
+    if _utf8_len(new_content + footer) <= max_bytes:
         return new_content
 
     if batches is None:
-        # 无法拆分到 batches，退回行边界截断
-        footer_size = len(footer.encode("utf-8"))
+        footer_size = _utf8_len(footer)
         available = max_bytes - footer_size
-        header_size = len(base_header.encode("utf-8"))
-        if available <= header_size:
-            return base_header
+        if available <= 0:
+            return ""
         return truncate_at_line_boundary(new_content, available)
 
-    # 拆分：前面的部分存入 batches，最后一段作为 current_batch 返回
     split_batches = _split_content_by_lines(new_content, footer, max_bytes, base_header)
-    if len(split_batches) <= 1:
-        # 无法再拆，直接返回（由后续 _safe_append_batch 兜底）
-        return new_content
+    if not split_batches:
+        return ""
+    if len(split_batches) == 1:
+        last = split_batches[0]
+        return last[: -len(footer)] if footer and last.endswith(footer) else last
 
-    # 前 N-1 个批次存入 batches
     batches.extend(split_batches[:-1])
-    # 最后一个批次去掉 footer 作为 current_batch（后续还会追加内容）
     last = split_batches[-1]
-    if last.endswith(footer):
+    if footer and last.endswith(footer):
         return last[: -len(footer)]
     return last
 
