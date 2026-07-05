@@ -45,6 +45,12 @@ from trendradar.notification.senders import (
     send_to_slack,
     SMTP_CONFIGS,
 )
+from trendradar.notification import senders as _telegram_senders_module
+from trendradar.notification.telegram_card import send_to_telegram as send_to_telegram
+
+# 公开 Telegram 推送统一走频道卡片包装层；私聊内部报告仍保持原始发送逻辑。
+_telegram_senders_module.send_to_telegram = send_to_telegram
+
 from trendradar.notification.dispatcher import NotificationDispatcher
 
 __all__ = [
