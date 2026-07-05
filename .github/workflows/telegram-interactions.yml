@@ -1,0 +1,45 @@
+name: Telegram Interactions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telegram-interactions
+  cancel-in-progress: true
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TZ: Asia/Singapore
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_INTERACTIONS_RUN_SECONDS: "1200"
+      TG_INTERACTIONS_POLL_TIMEOUT: "20"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --no-cache --index-url https://pypi.org/simple || (sleep 10 && uv sync --no-cache --index-url https://pypi.org/simple)
+
+      - name: Run Telegram interaction listener
+        run: uv run python trendradar/telegram_interactions.py
