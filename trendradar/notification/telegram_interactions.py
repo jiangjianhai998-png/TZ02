@@ -1,51 +1,38 @@
 # coding=utf-8
-"""Telegram inline button interaction worker.
+"""Telegram native comments compatibility worker.
 
-处理机器人推文按钮：
-- 点赞：每个 Telegram 账号对同一条推文只能点一次，并更新点赞总数；
-- 评论：不再使用自定义“评论 0”按钮，交给 Telegram 频道原生评论区处理；
-- 菜单：在 Telegram 内弹出说明；
-- 状态保存到 data/telegram_interactions_state.json。
+当前频道采用 Telegram 原生评论区。注意：Bot 自定义 inline keyboard 会覆盖/挤掉
+Telegram 频道原生“留言/评论”入口，所以这里不再给频道帖子添加自定义点赞按钮。
+如果旧消息上还有历史按钮，点击后会自动清除旧按钮，让原生评论入口恢复。
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import hmac
 import json
 import os
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 DEFAULT_STATE_PATH = "data/telegram_interactions_state.json"
 DEFAULT_POLL_SECONDS = 21000
 DEFAULT_POLL_TIMEOUT = 20
-COMMENT_TTL_SECONDS = 30 * 60
-
-
-def _now() -> int:
-    return int(time.time())
 
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "comments": {}, "pending_comments": {}, "posts": {}}
+        return {"version": STATE_VERSION, "offset": 0, "legacy_buttons_cleared": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         data = {}
     data.setdefault("version", STATE_VERSION)
     data.setdefault("offset", 0)
-    data.setdefault("likes", {})
-    data.setdefault("comments", {})
-    data.setdefault("pending_comments", {})
-    data.setdefault("posts", {})
+    data.setdefault("legacy_buttons_cleared", {})
     return data
 
 
@@ -72,7 +59,6 @@ def _api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, time
 
 
 def _prepare_bot(token: str) -> None:
-    # getUpdates 和 webhook 不能同时使用；这里主动关闭 webhook，但不丢弃未处理点击。
     result = _api(token, "deleteWebhook", {"drop_pending_updates": False}, timeout=10)
     print(f"[TG互动] deleteWebhook ok={result.get('ok')}")
     info = _api(token, "getMe", {}, timeout=10)
@@ -81,273 +67,74 @@ def _prepare_bot(token: str) -> None:
         print(f"[TG互动] bot connected @{username}")
 
 
-def _user_key(token: str, user_id: Any) -> str:
-    raw = str(user_id or "")
-    return hmac.new(token.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
-
-
-def _safe_name(user: Dict[str, Any]) -> str:
-    name = " ".join(str(user.get(k, "")).strip() for k in ("first_name", "last_name") if user.get(k))
-    return name or str(user.get("username") or "用户")
-
-
 def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
     chat = message.get("chat") or {}
     return chat.get("id"), message.get("message_id")
 
 
-def _message_text(message: Dict[str, Any]) -> str:
-    return str((message or {}).get("text") or (message or {}).get("caption") or "").strip()
-
-
-def _post_id_for_message(message: Dict[str, Any]) -> str:
-    """为频道帖子生成稳定且短的 post_id，保证 callback_data 不超长。"""
-    chat_id, message_id = _message_ref(message)
-    raw = f"{chat_id}:{message_id}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
-
-
-def _message_comment_url(message: Dict[str, Any]) -> str:
-    """生成 Telegram 原生消息/评论页链接。
-
-    新版本不再主动生成自定义评论按钮；这个函数只用于兼容旧消息上的评论 callback。
-    真正的评论入口应由 Telegram 频道 + 绑定讨论群组后自动生成。
-    """
-    if not message:
-        return ""
-    chat = message.get("chat") or {}
-    message_id = message.get("message_id")
-    if not message_id:
-        return ""
-
-    username = str(chat.get("username") or "").strip().lstrip("@")
-    if username:
-        safe_username = urllib.parse.quote(username, safe="")
-        return f"https://t.me/{safe_username}/{message_id}?comment=1"
-
-    chat_id = str(chat.get("id") or "").strip()
-    if chat_id.startswith("-100") and len(chat_id) > 4:
-        return f"https://t.me/c/{chat_id[4:]}/{message_id}?comment=1"
-
-    return ""
-
-
-def _post_id_from_message(message: Dict[str, Any]) -> Optional[str]:
-    """从原推文按钮里反查 post_id，兼容直接回复统计。"""
-    reply_markup = (message or {}).get("reply_markup") or {}
-    keyboard = reply_markup.get("inline_keyboard") or []
-    for row in keyboard:
-        for button in row or []:
-            data = str((button or {}).get("callback_data") or "")
-            if data.startswith(("tr_like:", "tr_comment:", "tr_menu:")):
-                _, _, post_id = data.partition(":")
-                return post_id or "default"
-    return None
-
-
-def _post_buttons(post_id: str, like_count: int, comment_count: int = 0, message: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """推文自定义按钮。
-
-    评论功能已切换为 Telegram 频道原生评论区，所以这里不再显示“💬 评论 0”。
-    频道绑定讨论群组后，Telegram 会在帖子底部自动显示“xx 条评论”。
-    """
-    return {
-        "inline_keyboard": [
-            [
-                {"text": f"👍 点赞 {like_count}", "callback_data": f"tr_like:{post_id}"},
-            ],
-            [{"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"}],
-        ]
-    }
-
-
-def _counts(state: Dict[str, Any], post_id: str) -> tuple[int, int]:
-    like_entry = state.setdefault("likes", {}).setdefault(post_id, {"users": []})
-    comments = state.setdefault("comments", {}).setdefault(post_id, [])
-    return len(like_entry.setdefault("users", [])), len(comments)
-
-
-def _edit_buttons(token: str, message: Dict[str, Any], post_id: str, state: Dict[str, Any]) -> None:
-    chat_id, message_id = _message_ref(message)
-    if not chat_id or not message_id:
-        return
-    like_count, comment_count = _counts(state, post_id)
-    result = _api(token, "editMessageReplyMarkup", {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "reply_markup": _post_buttons(post_id, like_count, comment_count, message=message),
-    })
-    if not result.get("ok"):
-        print(f"[TG互动] 更新按钮失败 post={post_id} result={result}")
-
-
-def _answer(
-    token: str,
-    callback_id: str,
-    text: str = "",
-    show_alert: bool = False,
-    url: Optional[str] = None,
-) -> None:
+def _answer(token: str, callback_id: str, text: str = "") -> None:
     payload: Dict[str, Any] = {
         "callback_query_id": callback_id,
-        "show_alert": show_alert,
+        "show_alert": False,
         "cache_time": 0,
     }
     if text:
         payload["text"] = text[:180]
-    if url:
-        payload["url"] = url
     _api(token, "answerCallbackQuery", payload)
 
 
-def _handle_channel_post(token: str, state: Dict[str, Any], message: Dict[str, Any]) -> bool:
-    """给频道新帖子自动补上点赞/菜单按钮。
-
-    Telegram 原生评论区由“频道 + 绑定讨论组”自动显示；这里仅补自定义点赞按钮。
-    """
+def _clear_legacy_buttons(token: str, message: Dict[str, Any]) -> bool:
     chat_id, message_id = _message_ref(message)
-    if not chat_id or not message_id or not _message_text(message):
+    if not chat_id or not message_id:
         return False
-
-    post_id = _post_id_from_message(message) or _post_id_for_message(message)
-    post_key = f"{chat_id}:{message_id}"
-    posts = state.setdefault("posts", {})
-    existing = posts.get(post_key) or {}
-
-    # 每次收到频道帖子都尝试刷新按钮，确保新发推文立刻出现点赞按钮。
-    _edit_buttons(token, message, post_id, state)
-    posts[post_key] = {
-        "post_id": post_id,
+    result = _api(token, "editMessageReplyMarkup", {
         "chat_id": chat_id,
         "message_id": message_id,
-        "updated_at": _now(),
-    }
-    if not existing:
-        print(f"[TG互动] 频道帖子已添加点赞按钮 post={post_id} chat={chat_id} message={message_id}")
-    return True
+        "reply_markup": {"inline_keyboard": []},
+    })
+    if result.get("ok"):
+        print(f"[TG互动] 已清除旧自定义按钮 chat={chat_id} message={message_id}")
+        return True
+    print(f"[TG互动] 清除旧按钮失败 result={result}")
+    return False
 
 
 def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]) -> bool:
     callback_id = str(callback.get("id") or "")
     data = str(callback.get("data") or "")
-    user = callback.get("from") or {}
     message = callback.get("message") or {}
     if not callback_id or not data.startswith("tr_"):
         return False
 
-    action, _, post_id = data.partition(":")
-    post_id = post_id or _post_id_for_message(message)
-    user_hash = _user_key(token, user.get("id"))
-
-    if action == "tr_like":
-        like_entry = state.setdefault("likes", {}).setdefault(post_id, {"users": []})
-        users = like_entry.setdefault("users", [])
-        if user_hash in users:
-            like_count, _ = _counts(state, post_id)
-            _answer(token, callback_id, f"你已经点赞过了。当前点赞 {like_count}")
-            return False
-        users.append(user_hash)
-        like_entry["updated_at"] = _now()
-        _edit_buttons(token, message, post_id, state)
-        like_count, _ = _counts(state, post_id)
-        _answer(token, callback_id, f"点赞成功，当前点赞 {like_count}")
-        print(f"[TG互动] 点赞成功 post={post_id} likes={like_count}")
-        return True
-
-    if action == "tr_comment":
-        # 兼容旧消息：旧按钮被点击时，不再弹窗提示，直接尝试跳转原生评论页；
-        # 同时把旧消息按钮刷新成“不含自定义评论按钮”的新版按钮。
-        comment_url = _message_comment_url(message)
-        _edit_buttons(token, message, post_id, state)
-        if comment_url:
-            _answer(token, callback_id, url=comment_url)
-            print(f"[TG互动] 旧评论按钮已跳转 post={post_id} url={comment_url}")
-            return True
-        _answer(token, callback_id)
-        print(f"[TG互动] 旧评论按钮已静默处理 post={post_id}")
-        return True
-
-    if action == "tr_menu":
-        _answer(token, callback_id, "功能菜单：点赞统计；评论请使用 Telegram 频道原生评论区。", show_alert=True)
-        return False
-
-    return False
-
-
-def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) -> bool:
-    user = message.get("from") or {}
-    chat = message.get("chat") or {}
-    text = _message_text(message)
-    if user.get("is_bot") or not user.get("id") or not chat.get("id") or not text:
-        return False
-
-    user_hash = _user_key(token, user.get("id"))
-    pending_key = f"{chat.get('id')}:{user_hash}"
-    pending = state.setdefault("pending_comments", {})
-    entry = pending.get(pending_key)
-    source_message: Dict[str, Any]
-
-    if entry:
-        if int(entry.get("expires_at") or 0) < _now():
-            pending.pop(pending_key, None)
-            return True
-        post_id = str(entry.get("post_id") or "default")
-        source_message = {
-            "chat": {"id": entry.get("chat_id")},
-            "message_id": entry.get("message_id"),
-        }
-        pending.pop(pending_key, None)
-    else:
-        # 仅作为旧逻辑兜底。新方向使用 Telegram 频道原生评论，不再由机器人伪造评论区。
-        reply_to = message.get("reply_to_message") or {}
-        post_id = _post_id_from_message(reply_to) or ""
-        if not post_id:
-            return False
-        source_message = reply_to
-        entry = {
-            "chat_id": chat.get("id"),
-            "message_id": reply_to.get("message_id"),
-        }
-
-    state.setdefault("comments", {}).setdefault(post_id, []).append({
-        "user": _safe_name(user)[:40],
-        "text": text[:300],
-        "created_at": _now(),
-    })
-
-    # 不再发送“某某 评论：...”刷屏消息，只更新点赞/菜单按钮，评论交给 Telegram 原生评论区。
-    _api(token, "editMessageReplyMarkup", {
-        "chat_id": entry.get("chat_id"),
-        "message_id": entry.get("message_id"),
-        "reply_markup": _post_buttons(post_id, *_counts(state, post_id), message=source_message),
-    })
-    _, comment_count = _counts(state, post_id)
-    print(f"[TG互动] 收到旧评论统计 post={post_id} comments={comment_count}")
-    return True
-
-
-def _cleanup_pending(state: Dict[str, Any]) -> bool:
+    chat_id, message_id = _message_ref(message)
+    key = f"{chat_id}:{message_id}"
     changed = False
-    pending = state.setdefault("pending_comments", {})
-    for key in list(pending.keys()):
-        if int(pending[key].get("expires_at") or 0) < _now():
-            pending.pop(key, None)
-            changed = True
+    if key not in state.setdefault("legacy_buttons_cleared", {}):
+        changed = _clear_legacy_buttons(token, message)
+        if changed:
+            state["legacy_buttons_cleared"][key] = int(time.time())
+
+    if data.startswith("tr_like:"):
+        _answer(token, callback_id, "已切换为 Telegram 原生反应，请使用帖子下方系统反应/评论。")
+    elif data.startswith("tr_comment:"):
+        _answer(token, callback_id, "请使用帖子下方 Telegram 原生评论入口。")
+    else:
+        _answer(token, callback_id, "已切换为 Telegram 原生评论/反应模式。")
     return changed
 
 
 def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> None:
     _prepare_bot(token)
     state = _load_state(state_path)
-    changed = _cleanup_pending(state)
+    changed = False
     started_at = time.time()
-    print(f"[TG互动] worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}, offset={state.get('offset')}")
+    print(f"[TG互动] native-comments worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}, offset={state.get('offset')}")
 
     while time.time() - started_at < poll_seconds:
         result = _api(token, "getUpdates", {
             "offset": int(state.get("offset") or 0),
             "timeout": poll_timeout,
-            "allowed_updates": ["callback_query", "message", "channel_post"],
+            "allowed_updates": ["callback_query"],
         }, timeout=poll_timeout + 10)
         if not result.get("ok"):
             time.sleep(5)
@@ -360,20 +147,16 @@ def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> 
                 changed = True
             if "callback_query" in update:
                 changed = _handle_callback(token, state, update["callback_query"]) or changed
-            elif "channel_post" in update:
-                changed = _handle_channel_post(token, state, update["channel_post"]) or changed
-            elif "message" in update:
-                changed = _handle_message(token, state, update["message"]) or changed
             if changed:
                 _save_state(state_path, state)
 
     if changed:
         _save_state(state_path, state)
-    print("[TG互动] worker finished")
+    print("[TG互动] native-comments worker finished")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Telegram interaction worker")
+    parser = argparse.ArgumentParser(description="Telegram native comments compatibility worker")
     parser.add_argument("--state", default=os.getenv("TELEGRAM_INTERACTION_STATE", DEFAULT_STATE_PATH))
     parser.add_argument("--poll-seconds", type=int, default=int(os.getenv("TELEGRAM_INTERACTION_POLL_SECONDS", DEFAULT_POLL_SECONDS)))
     parser.add_argument("--poll-timeout", type=int, default=int(os.getenv("TELEGRAM_INTERACTION_POLL_TIMEOUT", DEFAULT_POLL_TIMEOUT)))
