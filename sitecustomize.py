@@ -8,6 +8,7 @@ sys.path. It keeps small production hotfixes isolated from large upstream files.
 from __future__ import annotations
 
 import builtins
+import hashlib
 import html
 import re
 import sys
@@ -15,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 _ORIGINAL_IMPORT = builtins.__import__
 _PATCHED = False
+_REQUESTS_PATCHED = False
 
 
 _INTERNAL_KEYWORDS = (
@@ -165,6 +167,68 @@ def _public_micro_batch(content: str, *, batch_index: int, batch_total: int, max
     return posts[0] if posts else ""
 
 
+def _post_id_for_payload(chat_id: str, text: str) -> str:
+    raw = f"{chat_id}:{text}".encode("utf-8", errors="ignore")
+    return hashlib.sha256(raw).hexdigest()[:20]
+
+
+def _like_reply_markup(chat_id: str, text: str) -> Dict[str, Any]:
+    post_id = _post_id_for_payload(chat_id, text)
+    return {
+        "inline_keyboard": [
+            [{"text": "👍 点赞 0", "callback_data": f"tr_like:{post_id}"}],
+            [{"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"}],
+        ]
+    }
+
+
+def _patch_requests_post() -> None:
+    """Attach like/menu buttons at sendMessage time for public Telegram posts.
+
+    Relying only on the interaction worker to edit channel posts later can leave
+    a visible delay or no button if the worker has not started yet. This patch
+    makes the main push include the like button immediately.
+    """
+    global _REQUESTS_PATCHED
+    if _REQUESTS_PATCHED:
+        return
+
+    try:
+        import requests
+    except Exception:
+        return
+
+    original_post = requests.post
+
+    def _patched_post(url, *args, **kwargs):
+        try:
+            payload = kwargs.get("json")
+            if (
+                isinstance(url, str)
+                and "api.telegram.org/bot" in url
+                and url.endswith("/sendMessage")
+                and isinstance(payload, dict)
+            ):
+                chat_id = str(payload.get("chat_id") or "").strip()
+                text = str(payload.get("text") or "").strip()
+                if (
+                    _is_public_telegram_target(chat_id)
+                    and text
+                    and "reply_markup" not in payload
+                    and not all(_is_internal_line(line) for line in text.splitlines() if line.strip())
+                ):
+                    payload = dict(payload)
+                    payload["reply_markup"] = _like_reply_markup(chat_id, text)
+                    kwargs["json"] = payload
+        except Exception as exc:
+            print(f"[TZ02] Telegram like button payload patch skipped: {exc}")
+        return original_post(url, *args, **kwargs)
+
+    requests.post = _patched_post
+    _REQUESTS_PATCHED = True
+    print("[TZ02] Telegram like button payload patch enabled")
+
+
 def _patch_senders(module: Any) -> None:
     global _PATCHED
     if _PATCHED or not module:
@@ -184,6 +248,7 @@ def _patch_senders(module: Any) -> None:
     module._is_telegram_private_target = _is_telegram_private_target
     module._beautify_public_telegram_batches = _public_micro_posts
     module._beautify_public_telegram_batch = _public_micro_batch
+    _patch_requests_post()
     _PATCHED = True
     print("[TZ02] Telegram public channel micro-post patch enabled")
 
@@ -191,6 +256,7 @@ def _patch_senders(module: Any) -> None:
 def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
     module = _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
     try:
+        _patch_requests_post()
         senders = sys.modules.get("trendradar.notification.senders")
         if senders is not None:
             _patch_senders(senders)
@@ -200,6 +266,7 @@ def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 builtins.__import__ = _patched_import
+_patch_requests_post()
 
 # If senders was imported before this hook was installed, patch it immediately.
 if "trendradar.notification.senders" in sys.modules:
