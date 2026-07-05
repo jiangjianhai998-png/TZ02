@@ -21,6 +21,7 @@ jobs:
       TZ: Asia/Singapore
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_INTERACTION_STATE: data/telegram_interactions_state.json
+      # 5 小时 50 分钟：低于 GitHub Actions 6 小时限制，给保存状态留出时间。
       TELEGRAM_INTERACTION_POLL_SECONDS: "21000"
       TELEGRAM_INTERACTION_POLL_TIMEOUT: "20"
 
@@ -34,6 +35,51 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+            setup.py
+            setup.cfg
+
+      - name: Install Python dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f pyproject.toml ] && grep -Eq '^\[(project|tool\.poetry)\]' pyproject.toml; then
+            python -m pip install -e .
+          elif [ -f setup.py ] || [ -f setup.cfg ]; then
+            python -m pip install -e .
+          else
+            echo "No editable Python package metadata found; using repository source directly."
+          fi
+
+          python - <<'PY'
+          import importlib.util
+          import subprocess
+          import sys
+
+          required = ["requests"]
+          missing = [pkg for pkg in required if importlib.util.find_spec(pkg) is None]
+          if missing:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+          PY
+
+      - name: Prepare Telegram interaction state
+        run: |
+          set -e
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            echo "::error::Missing repository secret: TELEGRAM_BOT_TOKEN"
+            exit 1
+          fi
+
+          mkdir -p "$(dirname "$TELEGRAM_INTERACTION_STATE")"
+          echo "Telegram interaction state path: $TELEGRAM_INTERACTION_STATE"
 
       - name: Handle Telegram likes and comments
         run: python -m trendradar.notification.telegram_interactions
@@ -41,9 +87,18 @@ jobs:
       - name: Persist Telegram interaction state
         if: always()
         run: |
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/telegram_interactions_state.json || true
+
+          if [ ! -f "$TELEGRAM_INTERACTION_STATE" ]; then
+            echo "No Telegram interaction state file found, skip commit."
+            exit 0
+          fi
+
+          git add "$TELEGRAM_INTERACTION_STATE" || true
+
           if ! git diff --cached --quiet; then
             git commit -m "chore: update telegram interaction state [skip ci]"
             git pull --rebase --autostash || true
