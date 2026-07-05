@@ -28,6 +28,7 @@ jobs:
       AI_API_BASE: https://api.deepseek.com
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || format('{0};{1}', secrets.TELEGRAM_GROUP_CHAT_ID, secrets.TELEGRAM_CHANNEL_CHAT_ID) }}
+      TELEGRAM_PRIVATE_CHAT_ID: ${{ secrets.TELEGRAM_PRIVATE_CHAT_ID }}
       STORAGE_RETENTION_DAYS: "3"
       AI_TIMEOUT: "180"
 
