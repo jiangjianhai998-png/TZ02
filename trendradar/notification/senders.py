@@ -271,6 +271,192 @@ def _beautify_public_telegram_batch(
     return result or content
 
 
+def _extract_public_overview_from_lines(raw_lines: list) -> Dict[str, Optional[str]]:
+    """从原始批次里提取公开概览信息，供单条推送使用。"""
+    overview = {"total": None, "hotlist": None, "rss": None, "time": None, "topics": None}
+
+    def _set_value(key: str, plain_line: str) -> bool:
+        if key not in plain_line:
+            return False
+        value = plain_line.split(key, 1)[-1].strip(" ：:|-")
+        if not value:
+            return False
+        if key == "总新闻":
+            overview["total"] = value
+        elif key == "热榜":
+            overview["hotlist"] = value
+        elif key == "RSS":
+            overview["rss"] = value
+        elif key == "时间":
+            overview["time"] = value
+        elif key == "最热话题":
+            overview["topics"] = value
+        return True
+
+    for line in raw_lines:
+        plain = _strip_html_for_public_text(line).strip()
+        if not plain or _is_public_internal_line(plain):
+            continue
+        _set_value("总新闻", plain)
+        _set_value("热榜", plain)
+        _set_value("RSS", plain)
+        _set_value("时间", plain)
+        _set_value("最热话题", plain)
+    return overview
+
+
+def _is_public_news_item_line(raw_line: str, plain_line: str) -> bool:
+    """识别一条新闻/推文/视频条目。"""
+    if not plain_line or _is_public_internal_line(raw_line):
+        return False
+    if re.match(r"^\s*\d+[\.|、)]\s+", plain_line):
+        return True
+    if re.match(r"^\s*[•\-]\s+", plain_line) and ("http" in raw_line or "<a href=" in raw_line):
+        return True
+    if "<a href=" in raw_line and not plain_line.endswith(":"):
+        return True
+    return False
+
+
+def _is_public_context_line(raw_line: str, plain_line: str) -> bool:
+    """识别条目所属栏目，例如关键词、平台名、RSS源名。"""
+    if not plain_line or _is_public_internal_line(raw_line):
+        return False
+    skip_prefixes = (
+        "总新闻", "热榜", "RSS", "类型", "时间", "最热话题", "报告类型",
+        "更新时间", "TrendRadar", "热点快报", "本轮概览", "热点内容",
+    )
+    if plain_line.startswith(skip_prefixes):
+        return False
+    if re.match(r"^\[第\s*\d+/\d+\s*批次\]$", plain_line):
+        return False
+    if re.match(r"^(📊|🆕|📡|🔥|📈|📌|📍|🎬)", plain_line):
+        return True
+    if plain_line.endswith(":") or plain_line.endswith("："):
+        return True
+    if re.search(r"\(\d+\s*条\)", plain_line):
+        return True
+    return False
+
+
+def _normalize_public_news_item_line(raw_line: str) -> str:
+    """将原始编号条目转成更像频道单条推送的正文。"""
+    line = raw_line.strip()
+    line = re.sub(r"^\s*\d+[\.|、)]\s*", "", line)
+    line = re.sub(r"^\s*[•\-]\s*", "", line)
+    return line.strip()
+
+
+def _compose_single_public_post(
+    item_line: str,
+    *,
+    context_line: Optional[str],
+    overview: Dict[str, Optional[str]],
+    item_index: int,
+    max_bytes: int,
+) -> str:
+    """把一条新闻/推文/视频包装成一条独立 Telegram 推送。"""
+    parts = [
+        "🔥 <b>TrendRadar 热点快报</b>",
+        "━━━━━━━━━━━━━━",
+        f"🗞️ <b>第 {item_index} 条</b>",
+    ]
+
+    if context_line:
+        context = context_line.strip()
+        context = re.sub(r"^#{1,4}\s*", "", context)
+        context = re.sub(r"^\s*(📊|🆕|📡|🔥|📈|📌|📍|🎬)\s*", "", context)
+        context = context.strip(" ：:")
+        if context and not _is_public_internal_line(context):
+            parts.append(f"📍 <b>{context}</b>")
+
+    if overview.get("topics"):
+        parts.append(f"🧭 {overview['topics']}")
+    if overview.get("time"):
+        parts.append(f"⏱ {overview['time']}")
+
+    parts.extend([
+        "━━━━━━━━━━━━━━",
+        f"📰 {item_line}",
+    ])
+
+    result = "\n".join(parts).strip()
+
+    if len(result.encode("utf-8")) > max_bytes:
+        slim_parts = [
+            "🔥 <b>TrendRadar 热点快报</b>",
+            "━━━━━━━━━━━━━━",
+        ]
+        if context_line:
+            slim_parts.append(f"📍 <b>{_telegram_plain_fallback(context_line).strip(' ：:')}</b>")
+        slim_parts.append(f"📰 {item_line}")
+        result = "\n".join(slim_parts).strip()
+
+    if len(result.encode("utf-8")) > max_bytes:
+        result = f"🔥 <b>TrendRadar 热点快报</b>\n\n📰 {item_line}".strip()
+
+    if len(result.encode("utf-8")) > max_bytes:
+        result = truncate_at_line_boundary(result, max_bytes)
+
+    return result
+
+
+def _beautify_public_telegram_batches(
+    content: str,
+    *,
+    batch_index: int,
+    batch_total: int,
+    max_bytes: int = 4000,
+) -> list:
+    """
+    群组/频道公开推送拆成“每条新闻/推文/视频一条消息”。
+
+    如果无法稳定识别单条内容，则退回原来的整批美观版，避免漏发。
+    """
+    if not content:
+        return []
+
+    raw_lines = [line.rstrip() for line in str(content).splitlines()]
+    overview = _extract_public_overview_from_lines(raw_lines)
+    posts = []
+    current_context = None
+
+    for raw in raw_lines:
+        plain = _strip_html_for_public_text(raw).strip()
+        if not plain:
+            continue
+        if _is_public_internal_line(raw):
+            continue
+
+        if _is_public_news_item_line(raw, plain):
+            item = _normalize_public_news_item_line(raw)
+            if item and not _is_public_internal_line(item):
+                posts.append(
+                    _compose_single_public_post(
+                        item,
+                        context_line=current_context,
+                        overview=overview,
+                        item_index=len(posts) + 1,
+                        max_bytes=max_bytes,
+                    )
+                )
+            continue
+
+        if _is_public_context_line(raw, plain):
+            current_context = raw
+            continue
+
+    if posts:
+        return posts
+
+    fallback = _beautify_public_telegram_batch(
+        content,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        max_bytes=max_bytes,
+    )
+    return [fallback] if fallback else []
+
 def _extract_ai_stats(ai_analysis) -> Optional[Dict]:
     """从 AI 分析结果中提取统计数据"""
     if not ai_analysis or not getattr(ai_analysis, "success", False):
@@ -835,10 +1021,21 @@ def send_to_telegram(
     # 统一添加批次头部（已预留空间，不会超限）
     batches = add_batch_headers(batches, "telegram", batch_size)
 
-    # 群组/频道公开版做美观优化；私聊保留完整内部报告原貌，方便排错。
+    # 群组/频道公开版做美观优化，并按“每条新闻/推文/视频一条消息”拆开发送；
+    # 私聊保留完整内部报告原貌，方便排错。
     if not is_private_target:
         total_batches = len(batches)
-        batches = [
+        single_post_batches = []
+        for index, batch_content in enumerate(batches, 1):
+            single_post_batches.extend(
+                _beautify_public_telegram_batches(
+                    batch_content,
+                    batch_index=index,
+                    batch_total=total_batches,
+                    max_bytes=batch_size,
+                )
+            )
+        batches = single_post_batches or [
             _beautify_public_telegram_batch(
                 batch_content,
                 batch_index=index,
