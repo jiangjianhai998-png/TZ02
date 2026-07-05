@@ -274,13 +274,13 @@ def _load_display_config(config_data: Dict) -> Dict:
 
 
 def _load_ai_config(config_data: Dict) -> Dict:
-    """加载 AI 模型配置（LiteLLM 格式）"""
+    """加载 AI 模型配置（OpenAI-compatible 格式）"""
     ai_config = config_data.get("ai", {})
 
     timeout_env = _get_env_int_or_none("AI_TIMEOUT")
 
     return {
-        # LiteLLM 核心配置
+        # AI 核心配置
         "MODEL": _get_env_str("AI_MODEL") or ai_config.get("model", ""),
         "API_KEY": (
             _get_env_str("DEEPSEEK_API_KEY")
@@ -298,7 +298,7 @@ def _load_ai_config(config_data: Dict) -> Dict:
         "TEMPERATURE": ai_config.get("temperature", 1.0),
         "MAX_TOKENS": ai_config.get("max_tokens", 5000),
 
-        # LiteLLM 高级选项
+        # AI 高级选项
         "NUM_RETRIES": ai_config.get("num_retries", 2),
         "FALLBACK_MODELS": ai_config.get("fallback_models", []),
         "EXTRA_PARAMS": ai_config.get("extra_params", {}),

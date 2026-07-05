@@ -48,7 +48,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: |
+          # V3 fix: 不再依赖 LiteLLM/tiktoken；清理缓存后重试，避免 GitHub Actions 偶发下载失败。
+          uv cache clean || true
+          uv sync --frozen --no-cache || (sleep 10 && uv sync --frozen --no-cache)
 
       - name: Show schedule status
         run: uv run python -m trendradar --show-schedule
