@@ -3,7 +3,7 @@
 
 处理机器人推文按钮：
 - 点赞：每个 Telegram 账号对同一条推文只能点一次，并更新点赞总数；
-- 评论：不跳转源链接，在 Telegram 内提示用户直接回复推文；
+- 评论：优先直接打开 Telegram 原生评论/消息页面，不再弹窗提示；
 - 菜单：在 Telegram 内弹出说明；
 - 状态保存到 data/telegram_interactions_state.json。
 """
@@ -17,6 +17,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -89,12 +90,64 @@ def _safe_name(user: Dict[str, Any]) -> str:
     return name or str(user.get("username") or "用户")
 
 
-def _post_buttons(post_id: str, like_count: int, comment_count: int) -> Dict[str, Any]:
+def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
+    chat = message.get("chat") or {}
+    return chat.get("id"), message.get("message_id")
+
+
+def _message_comment_url(message: Dict[str, Any]) -> str:
+    """生成 Telegram 原生消息/评论页链接。
+
+    公开频道/群组使用 t.me/username/message_id；私有超级群/频道使用 t.me/c/internal_id/message_id。
+    追加 comment=1 可以让 Telegram 客户端优先打开评论入口；如果该消息没有评论区，客户端会打开原消息页。
+    """
+    if not message:
+        return ""
+    chat = message.get("chat") or {}
+    message_id = message.get("message_id")
+    if not message_id:
+        return ""
+
+    username = str(chat.get("username") or "").strip().lstrip("@")
+    if username:
+        safe_username = urllib.parse.quote(username, safe="")
+        return f"https://t.me/{safe_username}/{message_id}?comment=1"
+
+    chat_id = str(chat.get("id") or "").strip()
+    if chat_id.startswith("-100") and len(chat_id) > 4:
+        return f"https://t.me/c/{chat_id[4:]}/{message_id}?comment=1"
+
+    return ""
+
+
+def _post_id_from_message(message: Dict[str, Any]) -> Optional[str]:
+    """从原推文按钮里反查 post_id，方便用户直接回复时统计评论数。"""
+    reply_markup = (message or {}).get("reply_markup") or {}
+    keyboard = reply_markup.get("inline_keyboard") or []
+    for row in keyboard:
+        for button in row or []:
+            data = str((button or {}).get("callback_data") or "")
+            if data.startswith(("tr_like:", "tr_comment:", "tr_menu:")):
+                _, _, post_id = data.partition(":")
+                return post_id or "default"
+    return None
+
+
+def _post_buttons(post_id: str, like_count: int, comment_count: int, message: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    comment_button: Dict[str, Any] = {"text": f"💬 评论 {comment_count}"}
+    comment_url = _message_comment_url(message or {})
+    if comment_url:
+        # 有可打开的 Telegram 原生链接时，评论按钮直接跳转，不再走 callback 弹窗。
+        comment_button["url"] = comment_url
+    else:
+        # 极少数没有可生成链接的聊天，保留 callback 兜底。
+        comment_button["callback_data"] = f"tr_comment:{post_id}"
+
     return {
         "inline_keyboard": [
             [
                 {"text": f"👍 点赞 {like_count}", "callback_data": f"tr_like:{post_id}"},
-                {"text": f"💬 评论 {comment_count}", "callback_data": f"tr_comment:{post_id}"},
+                comment_button,
             ],
             [{"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"}],
         ]
@@ -107,11 +160,6 @@ def _counts(state: Dict[str, Any], post_id: str) -> tuple[int, int]:
     return len(like_entry.setdefault("users", [])), len(comments)
 
 
-def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
-    chat = message.get("chat") or {}
-    return chat.get("id"), message.get("message_id")
-
-
 def _edit_buttons(token: str, message: Dict[str, Any], post_id: str, state: Dict[str, Any]) -> None:
     chat_id, message_id = _message_ref(message)
     if not chat_id or not message_id:
@@ -120,31 +168,29 @@ def _edit_buttons(token: str, message: Dict[str, Any], post_id: str, state: Dict
     result = _api(token, "editMessageReplyMarkup", {
         "chat_id": chat_id,
         "message_id": message_id,
-        "reply_markup": _post_buttons(post_id, like_count, comment_count),
+        "reply_markup": _post_buttons(post_id, like_count, comment_count, message=message),
     })
     if not result.get("ok"):
         print(f"[TG互动] 更新按钮失败 post={post_id} result={result}")
 
 
-def _answer(token: str, callback_id: str, text: str, show_alert: bool = False) -> None:
-    _api(token, "answerCallbackQuery", {
+def _answer(
+    token: str,
+    callback_id: str,
+    text: str = "",
+    show_alert: bool = False,
+    url: Optional[str] = None,
+) -> None:
+    payload: Dict[str, Any] = {
         "callback_query_id": callback_id,
-        "text": text[:180],
         "show_alert": show_alert,
         "cache_time": 0,
-    })
-
-
-def _send_comment_prompt(token: str, message: Dict[str, Any]) -> None:
-    chat_id, message_id = _message_ref(message)
-    if not chat_id or not message_id:
-        return
-    _api(token, "sendMessage", {
-        "chat_id": chat_id,
-        "reply_to_message_id": message_id,
-        "allow_sending_without_reply": True,
-        "text": "💬 请直接回复这条推文写评论。评论会留在 Telegram 内，不会跳转到源链接。",
-    })
+    }
+    if text:
+        payload["text"] = text[:180]
+    if url:
+        payload["url"] = url
+    _api(token, "answerCallbackQuery", payload)
 
 
 def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]) -> bool:
@@ -164,6 +210,7 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
         users = like_entry.setdefault("users", [])
         if user_hash in users:
             like_count, _ = _counts(state, post_id)
+            # 点赞重复提示保留为普通顶部 toast，不弹窗。
             _answer(token, callback_id, f"你已经点赞过了。当前点赞 {like_count}")
             return False
         users.append(user_hash)
@@ -175,6 +222,16 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
         return True
 
     if action == "tr_comment":
+        # 老消息上的评论按钮可能还是 callback_data。这里不再弹窗，不再发送提示消息，
+        # 而是直接通过 answerCallbackQuery 打开 Telegram 原生消息/评论链接，并顺手把按钮改成 URL。
+        comment_url = _message_comment_url(message)
+        if comment_url:
+            _edit_buttons(token, message, post_id, state)
+            _answer(token, callback_id, url=comment_url)
+            print(f"[TG互动] 评论跳转 post={post_id} url={comment_url}")
+            return True
+
+        # 无法生成链接时只做静默兜底：记录 30 分钟内该用户的回复，不弹窗。
         chat_id, message_id = _message_ref(message)
         pending_key = f"{chat_id}:{user_hash}"
         state.setdefault("pending_comments", {})[pending_key] = {
@@ -183,13 +240,12 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
             "message_id": message_id,
             "expires_at": _now() + COMMENT_TTL_SECONDS,
         }
-        _answer(token, callback_id, "请直接回复这条推文写评论，评论不会跳转到源链接。", show_alert=True)
-        _send_comment_prompt(token, message)
-        print(f"[TG互动] 评论入口 post={post_id}")
+        _answer(token, callback_id)
+        print(f"[TG互动] 评论兜底入口 post={post_id}")
         return True
 
     if action == "tr_menu":
-        _answer(token, callback_id, "功能菜单：点赞统计、Telegram 内评论、后续可扩展收藏/分享/客服入口。", show_alert=True)
+        _answer(token, callback_id, "功能菜单：点赞统计、Telegram 原生评论、后续可扩展收藏/分享/客服入口。", show_alert=True)
         return False
 
     return False
@@ -199,26 +255,42 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
     user = message.get("from") or {}
     chat = message.get("chat") or {}
     text = str(message.get("text") or message.get("caption") or "").strip()
-    if not user.get("id") or not chat.get("id") or not text:
+    if user.get("is_bot") or not user.get("id") or not chat.get("id") or not text:
         return False
 
     user_hash = _user_key(token, user.get("id"))
     pending_key = f"{chat.get('id')}:{user_hash}"
     pending = state.setdefault("pending_comments", {})
     entry = pending.get(pending_key)
-    if not entry:
-        return False
-    if int(entry.get("expires_at") or 0) < _now():
-        pending.pop(pending_key, None)
-        return True
+    source_message: Dict[str, Any]
 
-    post_id = str(entry.get("post_id") or "default")
+    if entry:
+        if int(entry.get("expires_at") or 0) < _now():
+            pending.pop(pending_key, None)
+            return True
+        post_id = str(entry.get("post_id") or "default")
+        source_message = {
+            "chat": {"id": entry.get("chat_id")},
+            "message_id": entry.get("message_id"),
+        }
+        pending.pop(pending_key, None)
+    else:
+        # 用户直接点开评论/原消息页后，如果在 Telegram 里直接回复原推文，也按评论统计。
+        reply_to = message.get("reply_to_message") or {}
+        post_id = _post_id_from_message(reply_to) or ""
+        if not post_id:
+            return False
+        source_message = reply_to
+        entry = {
+            "chat_id": chat.get("id"),
+            "message_id": reply_to.get("message_id"),
+        }
+
     state.setdefault("comments", {}).setdefault(post_id, []).append({
         "user": _safe_name(user)[:40],
         "text": text[:300],
         "created_at": _now(),
     })
-    pending.pop(pending_key, None)
 
     _api(token, "sendMessage", {
         "chat_id": entry.get("chat_id"),
@@ -229,7 +301,7 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
     _api(token, "editMessageReplyMarkup", {
         "chat_id": entry.get("chat_id"),
         "message_id": entry.get("message_id"),
-        "reply_markup": _post_buttons(post_id, *_counts(state, post_id)),
+        "reply_markup": _post_buttons(post_id, *_counts(state, post_id), message=source_message),
     })
     _, comment_count = _counts(state, post_id)
     print(f"[TG互动] 收到评论 post={post_id} comments={comment_count}")
