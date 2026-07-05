@@ -8,7 +8,6 @@ sys.path. It keeps small production hotfixes isolated from large upstream files.
 from __future__ import annotations
 
 import builtins
-import hashlib
 import html
 import re
 import sys
@@ -16,7 +15,6 @@ from typing import Any, Dict, List, Optional
 
 _ORIGINAL_IMPORT = builtins.__import__
 _PATCHED = False
-_REQUESTS_PATCHED = False
 
 
 _INTERNAL_KEYWORDS = (
@@ -128,7 +126,11 @@ def _compose_public_post(item: Dict[str, str], max_bytes: int = 4000) -> str:
 
 
 def _public_micro_posts(content: str, *, batch_index: int, batch_total: int, max_bytes: int = 4000) -> List[str]:
-    """Turn system report blocks into clean channel tweets."""
+    """Turn system report blocks into clean channel tweets.
+
+    Do not attach custom inline buttons here. Telegram native comments/reactions
+    must stay untouched, otherwise bot keyboards can cover the native comments row.
+    """
     items: List[Dict[str, str]] = []
     for raw_line in str(content or "").splitlines():
         item = _extract_public_item(raw_line)
@@ -156,68 +158,6 @@ def _public_micro_batch(content: str, *, batch_index: int, batch_total: int, max
     return posts[0] if posts else ""
 
 
-def _post_id_for_payload(chat_id: str, text: str) -> str:
-    raw = f"{chat_id}:{text}".encode("utf-8", errors="ignore")
-    return hashlib.sha256(raw).hexdigest()[:20]
-
-
-def _like_reply_markup(chat_id: str, text: str) -> Dict[str, Any]:
-    post_id = _post_id_for_payload(chat_id, text)
-    return {
-        "inline_keyboard": [
-            [{"text": "👍 点赞 0", "callback_data": f"tr_like:{post_id}"}],
-            [{"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"}],
-        ]
-    }
-
-
-def _patch_requests_post() -> bool:
-    """Attach like/menu buttons at sendMessage time after requests is fully loaded."""
-    global _REQUESTS_PATCHED
-    if _REQUESTS_PATCHED:
-        return True
-
-    requests_module = sys.modules.get("requests")
-    if requests_module is None or not hasattr(requests_module, "post"):
-        return False
-
-    original_post = requests_module.post
-    if getattr(original_post, "_tz02_like_patch", False):
-        _REQUESTS_PATCHED = True
-        return True
-
-    def _patched_post(url, *args, **kwargs):
-        try:
-            payload = kwargs.get("json")
-            if (
-                isinstance(url, str)
-                and "api.telegram.org/bot" in url
-                and url.endswith("/sendMessage")
-                and isinstance(payload, dict)
-            ):
-                chat_id = str(payload.get("chat_id") or "").strip()
-                text = str(payload.get("text") or "").strip()
-                visible_lines = [line for line in text.splitlines() if line.strip()]
-                if (
-                    _is_public_telegram_target(chat_id)
-                    and text
-                    and "reply_markup" not in payload
-                    and not all(_is_internal_line(line) for line in visible_lines)
-                ):
-                    patched_payload = dict(payload)
-                    patched_payload["reply_markup"] = _like_reply_markup(chat_id, text)
-                    kwargs["json"] = patched_payload
-        except Exception as exc:
-            print(f"[TZ02] Telegram like button payload patch skipped: {exc}")
-        return original_post(url, *args, **kwargs)
-
-    _patched_post._tz02_like_patch = True
-    requests_module.post = _patched_post
-    _REQUESTS_PATCHED = True
-    print("[TZ02] Telegram like button payload patch enabled")
-    return True
-
-
 def _patch_senders(module: Any) -> None:
     global _PATCHED
     if not module:
@@ -235,14 +175,12 @@ def _patch_senders(module: Any) -> None:
     module._is_telegram_private_target = _is_telegram_private_target
     module._beautify_public_telegram_batches = _public_micro_posts
     module._beautify_public_telegram_batch = _public_micro_batch
-    _patch_requests_post()
     if not _PATCHED:
         print("[TZ02] Telegram public channel micro-post patch enabled")
     _PATCHED = True
 
 
 def _try_patch_runtime() -> None:
-    _patch_requests_post()
     senders = sys.modules.get("trendradar.notification.senders")
     if senders is not None:
         _patch_senders(senders)
