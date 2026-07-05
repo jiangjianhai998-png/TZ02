@@ -3,25 +3,25 @@ name: Telegram Interactions
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions 最小建议间隔约 5 分钟；脚本内部会长轮询，让按钮尽量接近实时响应。
-    - cron: "*/5 * * * *"
+    # 互动监听需要常驻运行；每 6 小时重启一次，避免按钮点击无人处理。
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
 
 concurrency:
   group: tz02-telegram-interactions
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 355
     env:
       TZ: Asia/Singapore
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_INTERACTION_STATE: data/telegram_interactions_state.json
-      TELEGRAM_INTERACTION_POLL_SECONDS: "260"
+      TELEGRAM_INTERACTION_POLL_SECONDS: "21000"
       TELEGRAM_INTERACTION_POLL_TIMEOUT: "20"
 
     steps:
