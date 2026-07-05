@@ -17,6 +17,8 @@ from typing import Any, Dict
 
 from . import senders as _senders
 
+_ORIGINAL_SEND_TO_TELEGRAM = _senders.send_to_telegram
+
 
 def _plain_text(text: str) -> str:
     """提取纯文本，方便判断与生成短评论。"""
@@ -126,6 +128,6 @@ def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
 
     _senders.requests.post = patched_post
     try:
-        return _senders.send_to_telegram(*args, **kwargs)
+        return _ORIGINAL_SEND_TO_TELEGRAM(*args, **kwargs)
     finally:
         _senders.requests.post = real_post
