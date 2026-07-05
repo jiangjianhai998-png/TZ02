@@ -1,0 +1,30 @@
+name: Check In / Clean Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_delete_runs:
+        description: "输入 YES 才删除历史 workflow runs；留空则只做签到检查"
+        required: false
+        default: ""
+
+jobs:
+  check_in:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check in
+        run: |
+          echo "✅ Check-in completed. Get Hot News workflow can continue running."
+      - name: Delete workflow runs only when confirmed
+        if: ${{ github.event.inputs.confirm_delete_runs == 'YES' }}
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 0
+          delete_workflow_by_state_pattern: "ALL"
+          delete_run_by_conclusion_pattern: "ALL"
