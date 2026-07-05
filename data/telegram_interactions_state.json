@@ -1,7 +1,29 @@
 {
-  "version": 1,
-  "offset": 0,
-  "likes": {},
-  "comments": {},
-  "pending_comments": {}
+  "comments": {
+    "e3149f3e7297dae7": []
+  },
+  "likes": {
+    "e3149f3e7297dae7": {
+      "updated_at": 1783263733,
+      "users": [
+        "44457ca69583d204c461c9b33fd91608"
+      ]
+    }
+  },
+  "offset": 680119651,
+  "pending_comments": {
+    "-1003988629771:44457ca69583d204c461c9b33fd91608": {
+      "chat_id": -1003988629771,
+      "expires_at": 1783265563,
+      "message_id": 324,
+      "post_id": "e3149f3e7297dae7"
+    },
+    "-1003988629771:e1114b4434d08a6719173d91998620f1": {
+      "chat_id": -1003988629771,
+      "expires_at": 1783266157,
+      "message_id": 324,
+      "post_id": "e3149f3e7297dae7"
+    }
+  },
+  "version": 1
 }
