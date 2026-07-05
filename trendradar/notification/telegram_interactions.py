@@ -1,11 +1,11 @@
 # coding=utf-8
 """Telegram inline button interaction worker.
 
-这个脚本专门处理机器人推文里的按钮：
-- 点赞：每个 Telegram 账号只能点赞一次，并更新按钮里的点赞总数；
-- 评论：不跳转源链接，在 Telegram 内提示用户直接回复推文进行评论；
-- 菜单：在 Telegram 内弹出功能说明；
-- 状态持久化到 data/telegram_interactions_state.json，供 GitHub Actions 周期运行。
+处理机器人推文按钮：
+- 点赞：每个 Telegram 账号对同一条推文只能点一次，并更新点赞总数；
+- 评论：不跳转源链接，在 Telegram 内提示用户直接回复推文；
+- 菜单：在 Telegram 内弹出说明；
+- 状态保存到 data/telegram_interactions_state.json。
 """
 
 from __future__ import annotations
@@ -17,14 +17,13 @@ import json
 import os
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 STATE_VERSION = 1
 DEFAULT_STATE_PATH = "data/telegram_interactions_state.json"
-DEFAULT_POLL_SECONDS = 260
+DEFAULT_POLL_SECONDS = 21000
 DEFAULT_POLL_TIMEOUT = 20
 COMMENT_TTL_SECONDS = 30 * 60
 
@@ -35,13 +34,7 @@ def _now() -> int:
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return {
-            "version": STATE_VERSION,
-            "offset": 0,
-            "likes": {},
-            "comments": {},
-            "pending_comments": {},
-        }
+        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "comments": {}, "pending_comments": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -61,15 +54,12 @@ def _save_state(path: Path, state: Dict[str, Any]) -> None:
 
 def _api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 30) -> Dict[str, Any]:
     url = f"https://api.telegram.org/bot{token}/{method}"
-    data = None
     headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout + 5) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw)
+            return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         print(f"[TG互动] API HTTPError method={method} status={exc.code} body={body[:300]}")
@@ -77,6 +67,16 @@ def _api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, time
     except Exception as exc:
         print(f"[TG互动] API Error method={method}: {exc}")
         return {"ok": False, "description": str(exc)}
+
+
+def _prepare_bot(token: str) -> None:
+    # getUpdates 和 webhook 不能同时使用；这里主动关闭 webhook，但不丢弃未处理点击。
+    result = _api(token, "deleteWebhook", {"drop_pending_updates": False}, timeout=10)
+    print(f"[TG互动] deleteWebhook ok={result.get('ok')}")
+    info = _api(token, "getMe", {}, timeout=10)
+    if info.get("ok"):
+        username = (info.get("result") or {}).get("username", "")
+        print(f"[TG互动] bot connected @{username}")
 
 
 def _user_key(token: str, user_id: Any) -> str:
@@ -96,18 +96,15 @@ def _post_buttons(post_id: str, like_count: int, comment_count: int) -> Dict[str
                 {"text": f"👍 点赞 {like_count}", "callback_data": f"tr_like:{post_id}"},
                 {"text": f"💬 评论 {comment_count}", "callback_data": f"tr_comment:{post_id}"},
             ],
-            [
-                {"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"},
-            ],
+            [{"text": "☰ 功能菜单", "callback_data": f"tr_menu:{post_id}"}],
         ]
     }
 
 
 def _counts(state: Dict[str, Any], post_id: str) -> tuple[int, int]:
     like_entry = state.setdefault("likes", {}).setdefault(post_id, {"users": []})
-    users = like_entry.setdefault("users", [])
     comments = state.setdefault("comments", {}).setdefault(post_id, [])
-    return len(users), len(comments)
+    return len(like_entry.setdefault("users", [])), len(comments)
 
 
 def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
@@ -115,10 +112,11 @@ def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
     return chat.get("id"), message.get("message_id")
 
 
-def _edit_buttons(token: str, message: Dict[str, Any], post_id: str, like_count: int, comment_count: int) -> None:
+def _edit_buttons(token: str, message: Dict[str, Any], post_id: str, state: Dict[str, Any]) -> None:
     chat_id, message_id = _message_ref(message)
     if not chat_id or not message_id:
         return
+    like_count, comment_count = _counts(state, post_id)
     result = _api(token, "editMessageReplyMarkup", {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -158,22 +156,20 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
         return False
 
     action, _, post_id = data.partition(":")
-    if not post_id:
-        post_id = "default"
-
+    post_id = post_id or "default"
     user_hash = _user_key(token, user.get("id"))
-    like_count, comment_count = _counts(state, post_id)
 
     if action == "tr_like":
-        like_entry = state["likes"].setdefault(post_id, {"users": []})
+        like_entry = state.setdefault("likes", {}).setdefault(post_id, {"users": []})
         users = like_entry.setdefault("users", [])
         if user_hash in users:
+            like_count, _ = _counts(state, post_id)
             _answer(token, callback_id, f"你已经点赞过了。当前点赞 {like_count}")
             return False
         users.append(user_hash)
         like_entry["updated_at"] = _now()
-        like_count, comment_count = _counts(state, post_id)
-        _edit_buttons(token, message, post_id, like_count, comment_count)
+        _edit_buttons(token, message, post_id, state)
+        like_count, _ = _counts(state, post_id)
         _answer(token, callback_id, f"点赞成功，当前点赞 {like_count}")
         print(f"[TG互动] 点赞成功 post={post_id} likes={like_count}")
         return True
@@ -194,7 +190,6 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
 
     if action == "tr_menu":
         _answer(token, callback_id, "功能菜单：点赞统计、Telegram 内评论、后续可扩展收藏/分享/客服入口。", show_alert=True)
-        print(f"[TG互动] 菜单点击 post={post_id}")
         return False
 
     return False
@@ -207,9 +202,9 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
     if not user.get("id") or not chat.get("id") or not text:
         return False
 
-    pending = state.setdefault("pending_comments", {})
     user_hash = _user_key(token, user.get("id"))
     pending_key = f"{chat.get('id')}:{user_hash}"
+    pending = state.setdefault("pending_comments", {})
     entry = pending.get(pending_key)
     if not entry:
         return False
@@ -218,15 +213,13 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
         return True
 
     post_id = str(entry.get("post_id") or "default")
-    comment_list = state.setdefault("comments", {}).setdefault(post_id, [])
-    comment_list.append({
+    state.setdefault("comments", {}).setdefault(post_id, []).append({
         "user": _safe_name(user)[:40],
         "text": text[:300],
         "created_at": _now(),
     })
     pending.pop(pending_key, None)
 
-    like_count, comment_count = _counts(state, post_id)
     _api(token, "sendMessage", {
         "chat_id": entry.get("chat_id"),
         "reply_to_message_id": entry.get("message_id"),
@@ -236,8 +229,9 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
     _api(token, "editMessageReplyMarkup", {
         "chat_id": entry.get("chat_id"),
         "message_id": entry.get("message_id"),
-        "reply_markup": _post_buttons(post_id, like_count, comment_count),
+        "reply_markup": _post_buttons(post_id, *_counts(state, post_id)),
     })
+    _, comment_count = _counts(state, post_id)
     print(f"[TG互动] 收到评论 post={post_id} comments={comment_count}")
     return True
 
@@ -245,47 +239,41 @@ def _handle_message(token: str, state: Dict[str, Any], message: Dict[str, Any]) 
 def _cleanup_pending(state: Dict[str, Any]) -> bool:
     changed = False
     pending = state.setdefault("pending_comments", {})
-    now = _now()
     for key in list(pending.keys()):
-        if int(pending[key].get("expires_at") or 0) < now:
+        if int(pending[key].get("expires_at") or 0) < _now():
             pending.pop(key, None)
             changed = True
     return changed
 
 
 def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> None:
+    _prepare_bot(token)
     state = _load_state(state_path)
     changed = _cleanup_pending(state)
     started_at = time.time()
-    print(f"[TG互动] worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}")
+    print(f"[TG互动] worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}, offset={state.get('offset')}")
 
     while time.time() - started_at < poll_seconds:
-        payload = {
+        result = _api(token, "getUpdates", {
             "offset": int(state.get("offset") or 0),
             "timeout": poll_timeout,
             "allowed_updates": ["callback_query", "message"],
-        }
-        result = _api(token, "getUpdates", payload, timeout=poll_timeout + 10)
+        }, timeout=poll_timeout + 10)
         if not result.get("ok"):
             time.sleep(5)
             continue
 
-        updates = result.get("result") or []
-        if not updates:
-            continue
-
-        for update in updates:
+        for update in result.get("result") or []:
             update_id = int(update.get("update_id") or 0)
             if update_id >= int(state.get("offset") or 0):
                 state["offset"] = update_id + 1
                 changed = True
-
             if "callback_query" in update:
                 changed = _handle_callback(token, state, update["callback_query"]) or changed
             elif "message" in update:
                 changed = _handle_message(token, state, update["message"]) or changed
-
-        _save_state(state_path, state)
+            if changed:
+                _save_state(state_path, state)
 
     if changed:
         _save_state(state_path, state)
@@ -303,7 +291,6 @@ def main() -> None:
     if not token:
         print("[TG互动] TELEGRAM_BOT_TOKEN is empty, skip.")
         return
-
     poll(token, Path(args.state), args.poll_seconds, args.poll_timeout)
 
 
