@@ -49,9 +49,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # V3 fix: 不再依赖 LiteLLM/tiktoken；清理缓存后重试，避免 GitHub Actions 偶发下载失败。
+          # GitHub Actions 不能访问内部 PyPI 镜像锁定地址，强制使用公开 PyPI 重新解析依赖。
           uv cache clean || true
-          uv sync --frozen --no-cache || (sleep 10 && uv sync --frozen --no-cache)
+          rm -f uv.lock
+          uv sync --no-cache --index-url https://pypi.org/simple || (sleep 10 && uv sync --no-cache --index-url https://pypi.org/simple)
 
       - name: Show schedule status
         run: uv run python -m trendradar --show-schedule
