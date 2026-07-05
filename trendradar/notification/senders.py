@@ -19,6 +19,8 @@ import smtplib
 import time
 import json
 import re
+import os
+import copy
 from datetime import datetime
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
@@ -33,6 +35,240 @@ import requests
 
 from .batch import add_batch_headers, get_max_batch_header_size
 from .formatters import convert_markdown_to_mrkdwn, strip_markdown
+
+
+_TELEGRAM_PRIVATE_REPORT_SENT = set()
+
+
+def _get_telegram_private_chat_ids() -> list:
+    """读取 Telegram 私聊目标 ID，多个 ID 用 ; 分隔。"""
+    raw = os.environ.get("TELEGRAM_PRIVATE_CHAT_ID", "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(";") if item.strip()]
+
+
+def _is_telegram_private_target(chat_id: str) -> bool:
+    """判断当前 Telegram 目标是否为私聊。群组/频道通常是负数 ID。"""
+    chat_id_str = str(chat_id).strip()
+    private_ids = set(_get_telegram_private_chat_ids())
+    if chat_id_str in private_ids:
+        return True
+    # Telegram 群组/频道 chat_id 一般以 - 开头；普通私聊通常为正数。
+    return bool(chat_id_str) and not chat_id_str.startswith("-")
+
+
+def _prepare_public_telegram_payload(
+    report_data: Dict,
+    report_type: str,
+    update_info: Optional[Dict],
+    ai_analysis: Any,
+) -> tuple:
+    """
+    群组/频道公开推送只保留新闻内容。
+
+    增量分析、AI 失败、异常平台、版本提示等内部状态不展示在公开群/频道，
+    这些内容会发送到 TELEGRAM_PRIVATE_CHAT_ID 指定的私聊。
+    """
+    public_report_data = copy.deepcopy(report_data) if report_data else {}
+    public_report_data["failed_ids"] = []
+
+    # 群组/频道不展示内部报告类型，避免出现“增量分析 / 错误报告 / 异常报告”等字样。
+    public_report_type = "热点快报"
+
+    # 群组/频道不展示 AI 成功/失败详情、版本更新等内部信息。
+    return public_report_data, public_report_type, None, None
+
+
+
+def _strip_html_for_public_text(text: str) -> str:
+    """用于美观整理时提取纯文本，不影响实际发送的原始正文。"""
+    return _telegram_plain_fallback(text or "")
+
+
+def _is_public_internal_line(line: str) -> bool:
+    """群组/频道公开内容里需要隐藏的内部状态行。"""
+    plain = _strip_html_for_public_text(line).strip()
+    if not plain:
+        return False
+
+    internal_keywords = (
+        "增量分析",
+        "错误报告",
+        "异常报告",
+        "AI 分析失败",
+        "AI分析失败",
+        "分析失败",
+        "失败平台",
+        "失败详情",
+        "异常平台",
+        "异常详情",
+        "HTTPError",
+        "Client Error",
+        "Traceback",
+        "Exception",
+        "DeepSeek",
+        "deepseek",
+        "api.deepseek.com",
+        "Payment Required",
+        "402",
+    )
+    return any(keyword in plain for keyword in internal_keywords)
+
+
+def _beautify_public_telegram_batch(
+    content: str,
+    *,
+    batch_index: int,
+    batch_total: int,
+    max_bytes: int = 4000,
+) -> str:
+    """
+    群组/频道专用 Telegram 美观优化。
+
+    目标：
+    1. 公开群/频道只看“热点快报”，不暴露增量分析、异常、AI 失败等内部状态；
+    2. 顶部增加清晰标题和概览；
+    3. 保持纯文本/少量 Telegram HTML 标签，降低解析失败风险。
+    """
+    if not content:
+        return content
+
+    raw_lines = [line.rstrip() for line in str(content).splitlines()]
+    plain_lines = [_strip_html_for_public_text(line).strip() for line in raw_lines]
+
+    overview = {
+        "total": None,
+        "hotlist": None,
+        "rss": None,
+        "time": None,
+        "topics": None,
+    }
+
+    def _capture_value(key: str, plain_line: str) -> bool:
+        if key not in plain_line:
+            return False
+        value = plain_line.split(key, 1)[-1].strip(" ：:|-")
+        if not value:
+            return False
+        if key == "总新闻":
+            overview["total"] = value
+        elif key == "热榜":
+            overview["hotlist"] = value
+        elif key == "RSS":
+            overview["rss"] = value
+        elif key == "时间":
+            overview["time"] = value
+        elif key == "最热话题":
+            overview["topics"] = value
+        return True
+
+    cleaned_lines = []
+    skip_prefixes = (
+        "总新闻",
+        "热榜",
+        "RSS",
+        "类型",
+        "时间",
+        "最热话题",
+        "报告类型",
+    )
+
+    for raw, plain in zip(raw_lines, plain_lines):
+        if not plain:
+            # 保留少量空行，但后面会统一压缩。
+            cleaned_lines.append("")
+            continue
+
+        # 提取原统计信息，用更美观的方式重排到顶部。
+        if (
+            _capture_value("总新闻", plain)
+            or _capture_value("热榜", plain)
+            or _capture_value("RSS", plain)
+            or _capture_value("时间", plain)
+            or _capture_value("最热话题", plain)
+        ):
+            continue
+
+        if plain.startswith(skip_prefixes):
+            continue
+        if _is_public_internal_line(raw):
+            continue
+
+        # 去掉容易显得像系统报告的批次/状态标题，但保留正文新闻。
+        if plain in {"热点快报", "TrendRadar", "TrendRadar 热点快报"}:
+            continue
+
+        line = raw.strip()
+        if not line:
+            cleaned_lines.append("")
+            continue
+
+        # Markdown 标题转 Telegram 友好的标题。
+        heading = re.match(r"^#{1,4}\s*(.+)$", line)
+        if heading:
+            title = heading.group(1).strip()
+            if title and not _is_public_internal_line(title):
+                cleaned_lines.append(f"📍 <b>{title}</b>")
+            continue
+
+        # 轻量优化编号列表。
+        line = re.sub(r"^\s*[-*]\s+", "• ", line)
+        cleaned_lines.append(line)
+
+    # 压缩空行。
+    compact_lines = []
+    prev_blank = False
+    for line in cleaned_lines:
+        blank = not line.strip()
+        if blank and prev_blank:
+            continue
+        compact_lines.append(line)
+        prev_blank = blank
+    body = "\n".join(compact_lines).strip()
+
+    header = [
+        "🔥 <b>TrendRadar 热点快报</b>",
+        "━━━━━━━━━━━━━━",
+    ]
+    if batch_total > 1:
+        header.append(f"📦 第 {batch_index}/{batch_total} 批")
+
+    overview_lines = []
+    if any(overview.values()):
+        overview_lines.append("📌 <b>本轮概览</b>")
+        if overview["total"]:
+            overview_lines.append(f"📰 总新闻：{overview['total']}")
+        if overview["hotlist"]:
+            overview_lines.append(f"🔥 热榜：{overview['hotlist']}")
+        if overview["rss"]:
+            overview_lines.append(f"📡 RSS：{overview['rss']}")
+        if overview["time"]:
+            overview_lines.append(f"⏱ 更新时间：{overview['time']}")
+        if overview["topics"]:
+            overview_lines.append(f"🧭 重点话题：{overview['topics']}")
+        overview_lines.append("━━━━━━━━━━━━━━")
+        overview_lines.append("🗞️ <b>热点内容</b>")
+
+    def _compose(lines):
+        parts = header + lines
+        if body:
+            parts.append(body)
+        return "\n".join(part for part in parts if part is not None).strip()
+
+    result = _compose(overview_lines)
+
+    # 防止美化头部把单条消息撑爆。超过限制时逐步降级，但仍保留公开清理后的正文。
+    if len(result.encode("utf-8")) > max_bytes:
+        slim_overview = [line for line in overview_lines if line.startswith(("📌", "⏱", "━━━━━━━━", "🗞️"))]
+        result = _compose(slim_overview)
+    if len(result.encode("utf-8")) > max_bytes:
+        result = _compose([])
+    if len(result.encode("utf-8")) > max_bytes and body:
+        # 最后兜底：只保留清理后的正文，避免内部错误内容重新暴露。
+        result = body
+
+    return result or content
 
 
 def _extract_ai_stats(ai_analysis) -> Optional[Dict]:
@@ -561,14 +797,33 @@ def send_to_telegram(
     # 日志前缀
     log_prefix = f"Telegram{account_label}" if account_label else "Telegram"
 
+    # 保存原始内容：私聊需要完整内部报告，群组/频道只发公开版。
+    original_report_data = report_data
+    original_report_type = report_type
+    original_update_info = update_info
+    original_ai_analysis = ai_analysis
+    original_rss_items = rss_items
+    original_rss_new_items = rss_new_items
+    original_display_regions = display_regions
+    original_standalone_data = standalone_data
+
+    is_private_target = _is_telegram_private_target(chat_id)
+    if not is_private_target:
+        report_data, report_type, update_info, ai_analysis = _prepare_public_telegram_payload(
+            report_data, report_type, update_info, ai_analysis
+        )
+
     # 渲染 AI 分析内容并提取统计数据
     ai_content = _render_ai_analysis(ai_analysis, "telegram") if ai_analysis else None
     ai_stats = _extract_ai_stats(ai_analysis)
 
-    # 获取分批内容，预留批次头部空间
+    # 获取分批内容，预留批次头部空间。
+    # 公开群/频道还会增加美观标题，所以额外预留空间，避免 Telegram 单条超长。
     header_reserve = get_max_batch_header_size("telegram")
+    public_beauty_reserve = 700 if not is_private_target else 0
+    content_max_bytes = max(1000, batch_size - header_reserve - public_beauty_reserve)
     batches = split_content_func(
-        report_data, "telegram", update_info, max_bytes=batch_size - header_reserve, mode=mode,
+        report_data, "telegram", update_info, max_bytes=content_max_bytes, mode=mode,
         rss_items=rss_items,
         rss_new_items=rss_new_items,
         ai_content=ai_content,
@@ -579,6 +834,19 @@ def send_to_telegram(
 
     # 统一添加批次头部（已预留空间，不会超限）
     batches = add_batch_headers(batches, "telegram", batch_size)
+
+    # 群组/频道公开版做美观优化；私聊保留完整内部报告原貌，方便排错。
+    if not is_private_target:
+        total_batches = len(batches)
+        batches = [
+            _beautify_public_telegram_batch(
+                batch_content,
+                batch_index=index,
+                batch_total=total_batches,
+                max_bytes=batch_size,
+            )
+            for index, batch_content in enumerate(batches, 1)
+        ]
 
     print(f"{log_prefix}消息分为 {len(batches)} 批次发送 [{report_type}]")
 
@@ -658,6 +926,38 @@ def send_to_telegram(
             return False
 
     print(f"{log_prefix}所有 {len(batches)} 批次发送完成 [{report_type}]")
+
+    # 群组/频道发送公开版后，把完整内部报告单独发送到私聊。
+    # 使用进程内去重，避免同时配置群组+频道时私聊重复收到两份。
+    if not is_private_target:
+        private_chat_ids = _get_telegram_private_chat_ids()
+        for private_chat_id in private_chat_ids:
+            dedupe_key = (bot_token, id(original_report_data), original_report_type, private_chat_id)
+            if private_chat_id == str(chat_id).strip() or dedupe_key in _TELEGRAM_PRIVATE_REPORT_SENT:
+                continue
+            _TELEGRAM_PRIVATE_REPORT_SENT.add(dedupe_key)
+            try:
+                print(f"{log_prefix}正在把完整内部报告发送到私聊 {private_chat_id} [{original_report_type}]")
+                send_to_telegram(
+                    bot_token=bot_token,
+                    chat_id=private_chat_id,
+                    report_data=original_report_data,
+                    report_type=original_report_type,
+                    update_info=original_update_info,
+                    proxy_url=proxy_url,
+                    mode=mode,
+                    account_label="私聊",
+                    batch_size=batch_size,
+                    batch_interval=batch_interval,
+                    split_content_func=split_content_func,
+                    rss_items=original_rss_items,
+                    rss_new_items=original_rss_new_items,
+                    ai_analysis=original_ai_analysis,
+                    display_regions=original_display_regions,
+                    standalone_data=original_standalone_data,
+                )
+            except Exception as e:
+                print(f"{log_prefix}完整内部报告发送到私聊失败：{e}")
 
     return True
 
