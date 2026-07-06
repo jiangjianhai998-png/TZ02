@@ -39,6 +39,7 @@ jobs:
       TELEGRAM_MENU_EGAME_URL: ${{ secrets.TELEGRAM_MENU_EGAME_URL }}
       STORAGE_RETENTION_DAYS: "3"
       AI_TIMEOUT: "180"
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout repository
@@ -51,6 +52,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Apply TZ02 Telegram layout before install
+        run: python scripts/apply_tz02_telegram_layout.py
+
+      - name: Verify TZ02 Telegram layout patch
+        run: |
+          set -e
+          grep -q "AI原创短评" trendradar/notification/senders.py
+          grep -q "_format_tz02_public_post" trendradar/notification/senders.py
+          grep -q "_build_public_telegram_reply_markup" trendradar/notification/senders.py
+          grep -q "百家乐" trendradar/notification/telegram_interactions.py
+          grep -q "final-menu worker" trendradar/notification/telegram_interactions.py
+          echo "TZ02 Telegram final layout patch verified."
+
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -62,9 +76,6 @@ jobs:
           uv cache clean || true
           rm -f uv.lock
           uv sync --no-cache --index-url https://pypi.org/simple || (sleep 10 && uv sync --no-cache --index-url https://pypi.org/simple)
-
-      - name: Apply TZ02 Telegram layout
-        run: python scripts/apply_tz02_telegram_layout.py
 
       - name: Show schedule status
         run: uv run python -m trendradar --show-schedule
