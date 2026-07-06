@@ -1,16 +1,11 @@
 # coding=utf-8
-"""Apply TZ02 Telegram public layout and two-level menu patch.
+"""Apply TZ02 Telegram final one-page UI.
 
-目标版面：
-1. 短视频/图片内容
-2. AI原创短评
-3. 点赞/评论
-4. 体育赛事 / 博彩娱乐 二级菜单
-
-按钮逻辑：
-- 主菜单：🏀 体育赛事 / 🎰 博彩娱乐
-- 体育赛事：NBA / 足球 / 直播 / 集锦 / 返回主菜单
-- 博彩娱乐：百家乐 / 德州扑克 / 龙虎斗 / 电子游戏 / 返回主菜单
+最终版面：
+- 正文只保留：AI原创短评
+- 频道按钮直接全部展示：NBA/足球/直播/集锦/百家乐/德州扑克/龙虎斗/电子游戏
+- 点赞/评论放在最底部
+- 不再使用二级菜单，不再需要返回主菜单
 """
 
 from __future__ import annotations
@@ -24,7 +19,6 @@ INTERACTIONS_PATH = ROOT / "trendradar" / "notification" / "telegram_interaction
 SENDERS_HELPER = r'''
 
 def _tz02_button_url(key: str) -> str:
-    """Read menu target URL from env/secrets."""
     env_map = {
         "nba": "TELEGRAM_MENU_NBA_URL",
         "football": "TELEGRAM_MENU_FOOTBALL_URL",
@@ -38,78 +32,67 @@ def _tz02_button_url(key: str) -> str:
     return os.environ.get(env_map.get(key, ""), "").strip()
 
 
-def _build_public_telegram_reply_markup(view: str = "main", like_count: Optional[int] = None) -> Dict[str, Any]:
-    """Build TZ02 two-level Telegram inline menu."""
+def _tz02_channel_button(text: str, key: str) -> Dict[str, str]:
+    url = _tz02_button_url(key)
+    if url.startswith(("http://", "https://", "tg://")):
+        return {"text": text, "url": url}
+    return {"text": text, "callback_data": f"tr_link:{key}"}
+
+
+def _build_public_telegram_reply_markup(like_count: Optional[int] = None) -> Dict[str, Any]:
+    """Final TZ02 one-page keyboard. Like/comment are always at the bottom."""
     like_label = "👍 点赞" if like_count is None or like_count <= 0 else f"👍 {like_count}"
-    keyboard = [[
-        {"text": like_label, "callback_data": "tr_like"},
-        {"text": "💬 评论", "callback_data": "tr_comment"},
-    ]]
-
-    def item(text: str, key: str) -> Dict[str, str]:
-        url = _tz02_button_url(key)
-        if url.startswith(("http://", "https://", "tg://")):
-            return {"text": text, "url": url}
-        return {"text": text, "callback_data": f"tr_link:{key}"}
-
-    if view == "sports":
-        keyboard.extend([
-            [item("🏀 NBA", "nba"), item("⚽ 足球", "football")],
-            [item("📺 直播", "live"), item("🏆 集锦", "highlights")],
-            [{"text": "🔙 返回主菜单", "callback_data": "tr_menu:main"}],
-        ])
-    elif view == "casino":
-        keyboard.extend([
-            [item("🎰 百家樂", "baccarat"), item("🃏 德州扑克", "poker")],
-            [item("🐉 龙虎斗", "dragon_tiger"), item("🎮 电子游戏", "egame")],
-            [{"text": "🔙 返回主菜单", "callback_data": "tr_menu:main"}],
-        ])
-    else:
-        keyboard.extend([
+    return {
+        "inline_keyboard": [
+            [_tz02_channel_button("NBA", "nba"), _tz02_channel_button("足球", "football")],
+            [_tz02_channel_button("直播", "live"), _tz02_channel_button("集锦", "highlights")],
+            [_tz02_channel_button("百家乐", "baccarat"), _tz02_channel_button("德州扑克", "poker")],
+            [_tz02_channel_button("龙虎斗", "dragon_tiger"), _tz02_channel_button("电子游戏", "egame")],
             [
-                {"text": "🏀 体育赛事", "callback_data": "tr_menu:sports"},
-                {"text": "🎰 博彩娱乐", "callback_data": "tr_menu:casino"},
-            ]
-        ])
-    return {"inline_keyboard": keyboard}
+                {"text": like_label, "callback_data": "tr_like"},
+                {"text": "💬 评论", "callback_data": "tr_comment"},
+            ],
+        ]
+    }
 
 
 def _tz02_strip_public_old_template(text: str) -> str:
-    """Remove old public template labels while preserving useful article text."""
     if not text:
         return ""
     plain = _telegram_plain_fallback(str(text))
     remove_contains = (
         "TrendRadar 原创编辑快报",
         "TrendRadar 热点快报",
+        "TrendRadar",
         "要点评论",
         "核心看点",
         "传播价值",
         "行业观察",
         "编辑短文",
+        "今日头条",
         "当前先编辑为自有短文",
         "不把评论按钮跳转到源链接",
         "这条内容不是简单转发源链接",
         "我们会把信息提取、压缩、改写成自己的视频文章结构",
+        "标题、导语、看点、评论点和互动问题",
+        "功能菜单",
     )
     cleaned = []
     for raw in plain.splitlines():
         line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("━"):
+        if not line or line.startswith("━"):
             continue
         if any(token in line for token in remove_contains):
             continue
         line = re.sub(r"^📰\s*", "", line).strip()
+        line = re.sub(r"^[-•]\s*", "", line).strip()
         if line:
             cleaned.append(line)
 
-    # 去重，避免旧模板里标题重复出现。
     result = []
     seen = set()
     for line in cleaned:
-        key = line[:120]
+        key = line[:100]
         if key in seen:
             continue
         seen.add(key)
@@ -118,61 +101,34 @@ def _tz02_strip_public_old_template(text: str) -> str:
 
 
 def _tz02_extract_short_comment(text: str) -> str:
-    """Create a short own-comment paragraph from available content."""
     body = _tz02_strip_public_old_template(text)
     if not body:
-        return "这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道讨论。"
+        return "这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道。"
     lines = [line for line in body.splitlines() if line.strip()]
     picked = " ".join(lines[:2]).strip()
     picked = re.sub(r"\s+", " ", picked)
     if len(picked) > 90:
         picked = picked[:87].rstrip() + "..."
-    return picked or "这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道讨论。"
+    return picked or "这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道。"
 
 
 def _format_tz02_public_post(text: str, max_bytes: int = 3900) -> str:
-    """Force final Telegram public post into TZ02 layout before sending."""
-    source = _tz02_strip_public_old_template(text)
+    """Final public message body. Video/image preview is shown by Telegram itself."""
     comment = _tz02_extract_short_comment(text)
-
-    if not source:
-        source = "热点视频/图片内容已抓取，等待进一步剪辑与分发。"
-
-    # 内容区尽量短，避免 Telegram 4000 字节限制。
-    if len(source) > 650:
-        source = source[:647].rstrip() + "..."
-
-    parts = [
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "🎬 <b>热点短视频/图片</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        source,
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "📝 <b>AI原创短评</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━",
+    result = "\n".join([
+        "AI原创短评",
+        "",
         comment,
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "🏀 <b>体育赛事</b>",
-        "🎰 <b>博彩娱乐</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-    ]
-    result = "\n".join(parts).strip()
+        "",
+        "━━━━━━━━━━━━━━",
+    ]).strip()
     if len(result.encode("utf-8")) > max_bytes:
-        result = "\n".join([
-            "🎬 <b>热点短视频/图片</b>",
-            source[:450].rstrip() + ("..." if len(source) > 450 else ""),
-            "━━━━━━━━━━━━━━",
-            "📝 <b>AI原创短评</b>",
-            comment,
-            "━━━━━━━━━━━━━━",
-            "🏀 <b>体育赛事</b>",
-            "🎰 <b>博彩娱乐</b>",
-        ]).strip()
+        result = "AI原创短评\n\n" + comment[:160].rstrip()
     return result
 '''
 
 INTERACTIONS_CONTENT = r'''# coding=utf-8
-"""Telegram custom interactions for TZ02 two-level menu."""
+"""Telegram interactions for TZ02 final one-page menu."""
 
 from __future__ import annotations
 
@@ -185,7 +141,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-STATE_VERSION = 4
+STATE_VERSION = 5
 DEFAULT_STATE_PATH = "data/telegram_interactions_state.json"
 DEFAULT_POLL_SECONDS = 21000
 DEFAULT_POLL_TIMEOUT = 20
@@ -193,7 +149,7 @@ DEFAULT_POLL_TIMEOUT = 20
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "liked_by": {}, "views": {}}
+        return {"version": STATE_VERSION, "offset": 0, "likes": {}, "liked_by": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -202,7 +158,6 @@ def _load_state(path: Path) -> Dict[str, Any]:
     data.setdefault("offset", 0)
     data.setdefault("likes", {})
     data.setdefault("liked_by", {})
-    data.setdefault("views", {})
     return data
 
 
@@ -243,11 +198,7 @@ def _message_ref(message: Dict[str, Any]) -> tuple[Any, Any]:
 
 
 def _answer(token: str, callback_id: str, text: str = "") -> None:
-    payload: Dict[str, Any] = {
-        "callback_query_id": callback_id,
-        "show_alert": False,
-        "cache_time": 0,
-    }
+    payload: Dict[str, Any] = {"callback_query_id": callback_id, "show_alert": False, "cache_time": 0}
     if text:
         payload["text"] = text[:180]
     _api(token, "answerCallbackQuery", payload)
@@ -267,51 +218,40 @@ def _button_url(key: str) -> str:
     return os.environ.get(env_map.get(key, ""), "").strip()
 
 
-def _url_or_callback(text: str, key: str) -> Dict[str, str]:
+def _channel_button(text: str, key: str) -> Dict[str, str]:
     url = _button_url(key)
     if url.startswith(("http://", "https://", "tg://")):
         return {"text": text, "url": url}
     return {"text": text, "callback_data": f"tr_link:{key}"}
 
 
-def _build_reply_markup(view: str = "main", like_count: int = 0) -> Dict[str, Any]:
+def _build_reply_markup(like_count: int = 0) -> Dict[str, Any]:
     like_label = "👍 点赞" if like_count <= 0 else f"👍 {like_count}"
-    keyboard = [[
-        {"text": like_label, "callback_data": "tr_like"},
-        {"text": "💬 评论", "callback_data": "tr_comment"},
-    ]]
-
-    if view == "sports":
-        keyboard.extend([
-            [_url_or_callback("🏀 NBA", "nba"), _url_or_callback("⚽ 足球", "football")],
-            [_url_or_callback("📺 直播", "live"), _url_or_callback("🏆 集锦", "highlights")],
-            [{"text": "🔙 返回主菜单", "callback_data": "tr_menu:main"}],
-        ])
-    elif view == "casino":
-        keyboard.extend([
-            [_url_or_callback("🎰 百家樂", "baccarat"), _url_or_callback("🃏 德州扑克", "poker")],
-            [_url_or_callback("🐉 龙虎斗", "dragon_tiger"), _url_or_callback("🎮 电子游戏", "egame")],
-            [{"text": "🔙 返回主菜单", "callback_data": "tr_menu:main"}],
-        ])
-    else:
-        keyboard.append([
-            {"text": "🏀 体育赛事", "callback_data": "tr_menu:sports"},
-            {"text": "🎰 博彩娱乐", "callback_data": "tr_menu:casino"},
-        ])
-    return {"inline_keyboard": keyboard}
+    return {
+        "inline_keyboard": [
+            [_channel_button("NBA", "nba"), _channel_button("足球", "football")],
+            [_channel_button("直播", "live"), _channel_button("集锦", "highlights")],
+            [_channel_button("百家乐", "baccarat"), _channel_button("德州扑克", "poker")],
+            [_channel_button("龙虎斗", "dragon_tiger"), _channel_button("电子游戏", "egame")],
+            [
+                {"text": like_label, "callback_data": "tr_like"},
+                {"text": "💬 评论", "callback_data": "tr_comment"},
+            ],
+        ]
+    }
 
 
-def _edit_markup(token: str, message: Dict[str, Any], view: str, like_count: int) -> bool:
+def _edit_markup(token: str, message: Dict[str, Any], like_count: int) -> bool:
     chat_id, message_id = _message_ref(message)
     if not chat_id or not message_id:
         return False
     result = _api(token, "editMessageReplyMarkup", {
         "chat_id": chat_id,
         "message_id": message_id,
-        "reply_markup": _build_reply_markup(view=view, like_count=like_count),
+        "reply_markup": _build_reply_markup(like_count=like_count),
     })
     if result.get("ok"):
-        print(f"[TG互动] 已更新按钮 chat={chat_id} message={message_id} view={view} likes={like_count}")
+        print(f"[TG互动] 已更新按钮 chat={chat_id} message={message_id} likes={like_count}")
         return True
     print(f"[TG互动] 更新按钮失败 result={result}")
     return False
@@ -328,8 +268,6 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
 
     chat_id, message_id = _message_ref(message)
     key = f"{chat_id}:{message_id}"
-    like_count = int(state.setdefault("likes", {}).get(key, 0) or 0)
-    current_view = state.setdefault("views", {}).get(key, "main")
 
     if data.startswith("tr_like"):
         liked_map = state.setdefault("liked_by", {})
@@ -343,27 +281,13 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
             action_text = "已点赞"
         like_count = len(liked_users)
         state.setdefault("likes", {})[key] = like_count
-        _edit_markup(token, message, current_view, like_count)
+        _edit_markup(token, message, like_count)
         _answer(token, callback_id, f"{action_text}，当前 {like_count} 个赞")
         return True
 
     if data.startswith("tr_comment"):
         _answer(token, callback_id, "评论入口已保留。可以在消息下方留言互动，不会跳转源链接。")
         return False
-
-    if data.startswith("tr_menu:"):
-        view = data.split(":", 1)[-1] or "main"
-        if view not in {"main", "sports", "casino"}:
-            view = "main"
-        state.setdefault("views", {})[key] = view
-        _edit_markup(token, message, view, like_count)
-        if view == "main":
-            _answer(token, callback_id, "已返回主菜单")
-        elif view == "sports":
-            _answer(token, callback_id, "体育赛事菜单")
-        else:
-            _answer(token, callback_id, "博彩娱乐菜单")
-        return True
 
     if data.startswith("tr_link:"):
         link_key = data.split(":", 1)[-1]
@@ -379,7 +303,7 @@ def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> 
     state = _load_state(state_path)
     changed = False
     started_at = time.time()
-    print(f"[TG互动] two-level-menu worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}, offset={state.get('offset')}")
+    print(f"[TG互动] final-menu worker started, poll_seconds={poll_seconds}, timeout={poll_timeout}, offset={state.get('offset')}")
 
     while time.time() - started_at < poll_seconds:
         result = _api(token, "getUpdates", {
@@ -403,11 +327,11 @@ def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> 
 
     if changed:
         _save_state(state_path, state)
-    print("[TG互动] two-level-menu worker finished")
+    print("[TG互动] final-menu worker finished")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Telegram TZ02 two-level menu worker")
+    parser = argparse.ArgumentParser(description="Telegram TZ02 final menu worker")
     parser.add_argument("--state", default=os.getenv("TELEGRAM_INTERACTION_STATE", DEFAULT_STATE_PATH))
     parser.add_argument("--poll-seconds", type=int, default=int(os.getenv("TELEGRAM_INTERACTION_POLL_SECONDS", DEFAULT_POLL_SECONDS)))
     parser.add_argument("--poll-timeout", type=int, default=int(os.getenv("TELEGRAM_INTERACTION_POLL_TIMEOUT", DEFAULT_POLL_TIMEOUT)))
@@ -429,19 +353,53 @@ def patch_senders() -> None:
     text = SENDERS_PATH.read_text(encoding="utf-8")
     changed = False
 
-    # Replace old helper if present, otherwise insert before _extract_ai_stats.
-    start = text.find("\ndef _get_public_telegram_menu_items()")
     end = text.find("\ndef _extract_ai_stats(ai_analysis)")
     if end == -1:
         raise RuntimeError("Cannot locate _extract_ai_stats marker in senders.py")
-    if start != -1 and start < end:
+
+    starts = [
+        text.find("\ndef _get_public_telegram_menu_items()"),
+        text.find("\ndef _tz02_button_url(key: str)"),
+    ]
+    starts = [s for s in starts if s != -1 and s < end]
+    if starts:
+        start = min(starts)
         text = text[:start] + SENDERS_HELPER + text[end:]
         changed = True
     elif "def _build_public_telegram_reply_markup" not in text:
         text = text[:end] + SENDERS_HELPER + text[end:]
         changed = True
 
-    # Force final public Telegram body into the new TZ02 layout immediately before payload creation.
+    # Remove old public beautifier block usage so final text is always TZ02 V4.
+    old_block = '''    # 群组/频道公开版做美观优化，并按“每条新闻/推文/视频一条消息”拆开发送；
+    # 私聊保留完整内部报告原貌，方便排错。
+    if not is_private_target:
+        total_batches = len(batches)
+        single_post_batches = []
+        for index, batch_content in enumerate(batches, 1):
+            single_post_batches.extend(
+                _beautify_public_telegram_batches(
+                    batch_content,
+                    batch_index=index,
+                    batch_total=total_batches,
+                    max_bytes=batch_size,
+                )
+            )
+        batches = single_post_batches or [
+            _beautify_public_telegram_batch(
+                batch_content,
+                batch_index=index,
+                batch_total=total_batches,
+                max_bytes=batch_size,
+            )
+            for index, batch_content in enumerate(batches, 1)
+        ]
+'''
+    if old_block in text:
+        text = text.replace(old_block, '''    # TZ02 V4: 公开群/频道不再使用旧 TrendRadar 版面；发送前统一压成最终短评模板。
+''', 1)
+        changed = True
+
     marker = '''        payload = {
             "chat_id": chat_id,
             "text": batch_content,
@@ -459,7 +417,7 @@ def patch_senders() -> None:
             "disable_web_page_preview": True,
         }
         if not is_private_target:
-            payload["reply_markup"] = _build_public_telegram_reply_markup("main")
+            payload["reply_markup"] = _build_public_telegram_reply_markup()
 '''
     if marker in text:
         text = text.replace(marker, replacement, 1)
@@ -479,7 +437,7 @@ def patch_senders() -> None:
                     "disable_web_page_preview": True,
                 }
                 if not is_private_target:
-                    fallback_payload["reply_markup"] = _build_public_telegram_reply_markup("main")
+                    fallback_payload["reply_markup"] = _build_public_telegram_reply_markup()
 '''
     if fallback_marker in text:
         text = text.replace(fallback_marker, fallback_replacement, 1)
@@ -487,18 +445,18 @@ def patch_senders() -> None:
 
     if changed:
         SENDERS_PATH.write_text(text, encoding="utf-8")
-        print("[TZ02] Patched Telegram final layout and two-level menu.")
+        print("[TZ02] Patched Telegram final one-page layout.")
     else:
         print("[TZ02] Telegram sender already patched.")
 
 
 def patch_interactions() -> None:
     current = INTERACTIONS_PATH.read_text(encoding="utf-8") if INTERACTIONS_PATH.exists() else ""
-    if "two-level-menu worker" in current and "tr_menu:sports" in current:
+    if "final-menu worker" in current and "百家乐" in current and "德州扑克" in current:
         print("[TZ02] Telegram interactions already patched.")
         return
     INTERACTIONS_PATH.write_text(INTERACTIONS_CONTENT, encoding="utf-8")
-    print("[TZ02] Patched Telegram two-level interactions worker.")
+    print("[TZ02] Patched Telegram final one-page interactions worker.")
 
 
 def main() -> None:
