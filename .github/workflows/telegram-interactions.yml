@@ -24,6 +24,12 @@ jobs:
       # 5 小时 50 分钟：低于 GitHub Actions 6 小时限制，给保存状态留出时间。
       TELEGRAM_INTERACTION_POLL_SECONDS: "21000"
       TELEGRAM_INTERACTION_POLL_TIMEOUT: "20"
+      TELEGRAM_MENU_ITEMS: ${{ secrets.TELEGRAM_MENU_ITEMS }}
+      TELEGRAM_MENU_NBA_URL: ${{ secrets.TELEGRAM_MENU_NBA_URL }}
+      TELEGRAM_MENU_BACCARAT_URL: ${{ secrets.TELEGRAM_MENU_BACCARAT_URL }}
+      TELEGRAM_MENU_POKER_URL: ${{ secrets.TELEGRAM_MENU_POKER_URL }}
+      TELEGRAM_MENU_NEWS_URL: ${{ secrets.TELEGRAM_MENU_NEWS_URL }}
+      TELEGRAM_MENU_ANTI_GAMBLING_URL: ${{ secrets.TELEGRAM_MENU_ANTI_GAMBLING_URL }}
 
     steps:
       - name: Checkout repository
@@ -69,6 +75,9 @@ jobs:
           if missing:
               subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
           PY
+
+      - name: Apply TZ02 Telegram layout
+        run: python scripts/apply_tz02_telegram_layout.py
 
       - name: Prepare Telegram interaction state
         run: |
