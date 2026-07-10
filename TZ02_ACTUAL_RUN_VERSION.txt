@@ -1,0 +1,33 @@
+TZ02 实际运行修正版
+===================
+
+本版本已完成：
+1. 找到真实 Telegram 外层包装入口：trendradar/notification/telegram_card.py
+2. 删除旧版外层：短视频/图片、TrendRadar 原创编辑快报、要点评论、编辑短文、功能菜单
+3. 最终正文只保留：AI原创短评 + 50~90 字短评
+4. 按钮固定为：
+   NBA / 足球
+   直播 / 集锦
+   บาคาร่า / 德州扑克
+   龙虎斗 / 电子游戏
+   👍 点赞 / 💬 评论
+5. 修改互动 worker，不再恢复旧“功能菜单”或清除新按钮
+6. DeepSeek 依赖安装成功
+7. 完成 Python compileall、Telegram payload 模拟测试、python -m trendradar --show-schedule 启动测试
+
+GitHub Secrets 仍需配置：
+- DEEPSEEK_API_KEY
+- TELEGRAM_BOT_TOKEN
+- TELEGRAM_CHAT_ID（或 TELEGRAM_GROUP_CHAT_ID / TELEGRAM_CHANNEL_CHAT_ID）
+
+频道按钮需要跳转时配置：
+- TELEGRAM_MENU_NBA_URL
+- TELEGRAM_MENU_FOOTBALL_URL
+- TELEGRAM_MENU_LIVE_URL
+- TELEGRAM_MENU_HIGHLIGHTS_URL
+- TELEGRAM_MENU_BACCARAT_URL
+- TELEGRAM_MENU_POKER_URL
+- TELEGRAM_MENU_DRAGON_TIGER_URL
+- TELEGRAM_MENU_EGAME_URL
+
+未配置频道 URL 时，按钮会提示“频道链接尚未配置”，不会跳转错误地址。

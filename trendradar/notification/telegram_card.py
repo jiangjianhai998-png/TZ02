@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from html import unescape
 from typing import Any, Dict, Optional, Tuple
@@ -23,17 +24,17 @@ def _plain_text(text: str) -> str:
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
-def _extract_urls(text: str) -> list:
-    urls = []
+def _extract_urls(text: str) -> list[str]:
+    urls: list[str] = []
     urls.extend(re.findall(r'<a\s+href=["\']([^"\']+)["\']', text or '', flags=re.IGNORECASE))
     urls.extend(re.findall(r'https?://[^\s<>\'\"]+', text or ''))
-    result = []
-    seen = set()
+    result: list[str] = []
+    seen: set[str] = set()
     for url in urls:
-        url = str(url).strip().rstrip('，。；;、)')
-        if url and url not in seen:
-            seen.add(url)
-            result.append(url)
+        value = str(url).strip().rstrip('，。；;、)')
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
     return result
 
 
@@ -53,7 +54,7 @@ def _pick_media_url(content: str) -> Tuple[str, str]:
     for url in urls:
         if _is_direct_image_url(url):
             return 'photo', url
-    return ('', '')
+    return '', ''
 
 
 def _post_id(content: str) -> str:
@@ -66,64 +67,80 @@ def _is_public_telegram_payload(payload: Dict[str, Any]) -> bool:
     return bool(chat_id) and not _senders._is_telegram_private_target(chat_id)
 
 
-def _mask_chat_id(chat_id: Any) -> str:
-    raw = str(chat_id or '').strip()
-    if len(raw) <= 4:
-        return '***'
-    prefix = '-' if raw.startswith('-') else ''
-    return f'{prefix}***{raw[-4:]}'
+def _menu_url(key: str) -> str:
+    env_map = {
+        'nba': 'TELEGRAM_MENU_NBA_URL',
+        'football': 'TELEGRAM_MENU_FOOTBALL_URL',
+        'live': 'TELEGRAM_MENU_LIVE_URL',
+        'highlights': 'TELEGRAM_MENU_HIGHLIGHTS_URL',
+        'baccarat': 'TELEGRAM_MENU_BACCARAT_URL',
+        'poker': 'TELEGRAM_MENU_POKER_URL',
+        'dragon_tiger': 'TELEGRAM_MENU_DRAGON_TIGER_URL',
+        'egame': 'TELEGRAM_MENU_EGAME_URL',
+    }
+    return os.getenv(env_map.get(key, ''), '').strip()
 
 
-def _preview_text(text: str, max_chars: int = 500) -> str:
-    preview = _plain_text(text)
-    preview = re.sub(r'https?://[^\s<>\'\"]+', '[URL]', preview)
-    return preview[:max_chars].rstrip() + ('...' if len(preview) > max_chars else '')
-
-
-def _button_preview(reply_markup: Any) -> str:
-    if not isinstance(reply_markup, dict):
-        return 'none'
-    rows = reply_markup.get('inline_keyboard') or []
-    return ' / '.join(' | '.join(str(b.get('text', '')).strip() for b in row if isinstance(b, dict)) for row in rows)
-
-
-def _log_public_payload_preview(method: str, payload: Dict[str, Any], stage: str) -> None:
-    if not _is_public_telegram_payload(payload):
-        return
-    text = str(payload.get('caption') or payload.get('text') or '')
-    media_type = 'photo' if payload.get('photo') else 'video' if payload.get('video') else 'text'
-    print('\n[TG预览]━━━━━━━━━━━━━━━━━━━━')
-    print(f'[TG预览] stage={stage} method={method} chat={_mask_chat_id(payload.get("chat_id"))} media={media_type}')
-    print(f'[TG预览] buttons={_button_preview(payload.get("reply_markup"))}')
-    print('[TG预览] content_start')
-    print(_preview_text(text))
-    print('[TG预览] content_end')
-    print('[TG预览]━━━━━━━━━━━━━━━━━━━━\n')
+def _channel_button(text: str, key: str) -> Dict[str, str]:
+    url = _menu_url(key)
+    if url.startswith(('http://', 'https://', 'tg://')):
+        return {'text': text, 'url': url}
+    return {'text': text, 'callback_data': f'tr_link:{key}'}
 
 
 def _build_inline_keyboard(content: str) -> Dict[str, list]:
     post_id = _post_id(content)
     return {
         'inline_keyboard': [
+            [_channel_button('NBA', 'nba'), _channel_button('足球', 'football')],
+            [_channel_button('直播', 'live'), _channel_button('集锦', 'highlights')],
+            [_channel_button('百家乐', 'baccarat'), _channel_button('德州扑克', 'poker')],
+            [_channel_button('龙虎斗', 'dragon_tiger'), _channel_button('电子游戏', 'egame')],
             [
-                {'text': '👍 点赞 0', 'callback_data': f'tr_like:{post_id}'},
-                {'text': '💬 评论 0', 'callback_data': f'tr_comment:{post_id}'},
+                {'text': '👍 点赞', 'callback_data': f'tr_like:{post_id}'},
+                {'text': '💬 评论', 'callback_data': f'tr_comment:{post_id}'},
             ],
-            [{'text': '☰ 功能菜单', 'callback_data': f'tr_menu:{post_id}'}],
         ]
     }
 
 
-def _extract_news_line(text: str) -> str:
-    for line in _plain_text(text).splitlines():
-        line = line.strip()
-        if line.startswith('📰'):
-            return line.lstrip('📰').strip()
-    for line in _plain_text(text).splitlines():
-        line = line.strip()
-        if line and not line.startswith(('🔥', '📍', '🧭', '⏱', '🗞️', '━', '📦')):
-            return line[:120]
-    return ''
+_REMOVE_MARKERS = (
+    'TrendRadar 原创编辑快报', 'TrendRadar 热点快报', 'TrendRadar',
+    '要点评论', '核心看点', '传播价值', '行业观察', '编辑短文',
+    '短视频/图片', '热点短视频/图片', '当前先编辑为自有短文',
+    '不把评论按钮跳转到源链接', '这条内容不是简单转发源链接',
+    '我们会把信息提取、压缩、改写成自己的视频文章结构',
+    '标题、导语、看点、评论点和互动问题', '功能菜单',
+)
+
+
+def _extract_short_comment(original_text: str) -> str:
+    lines: list[str] = []
+    for raw in _plain_text(original_text).splitlines():
+        line = raw.strip()
+        if not line or line.startswith('━'):
+            continue
+        if any(marker in line for marker in _REMOVE_MARKERS):
+            continue
+        line = re.sub(r'^[🧠📝📰🎬🔥📍🧭⏱🗞️📦]\s*', '', line).strip()
+        line = re.sub(r'^[•\-*]\s*', '', line).strip()
+        if line and line not in {'AI原创短评', '今日头条', '热点快报'}:
+            lines.append(line)
+    comment = ' '.join(lines[:2]).strip()
+    if not comment:
+        comment = '这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道。'
+    comment = re.sub(r'\s+', ' ', comment)
+    return comment[:87].rstrip() + '...' if len(comment) > 90 else comment
+
+
+def _compose_public_card_text(original_text: str) -> str:
+    return '\n'.join([
+        'AI原创短评',
+        '',
+        _extract_short_comment(original_text),
+        '',
+        '━━━━━━━━━━━━━━',
+    ]).strip()
 
 
 def _truncate_utf8(text: str, max_bytes: int) -> str:
@@ -138,45 +155,19 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
     return ''
 
 
-def _compose_public_card_text(original_text: str, include_media_block: bool) -> str:
-    media_type, media_url = _pick_media_url(original_text)
-    title = _extract_news_line(original_text)
-    parts = []
-    if include_media_block:
-        parts.append('🎬 <b>短视频/图片</b>')
-        if media_type in ('photo', 'video') and media_url:
-            parts.append('已提取到可展示媒体素材，优先以图片/视频卡片展示。')
-        else:
-            parts.append('当前先编辑为自有短文，不把评论按钮跳转到源链接。')
-        parts.append('━━━━━━━━━━━━━━')
-    parts.extend([
-        '🔥 <b>TrendRadar 原创编辑快报</b>',
-        '━━━━━━━━━━━━━━',
-        '🧠 <b>要点评论</b>',
-        f'• 核心看点：{(title or "本条内容具备继续跟进价值")[:80]}',
-        '• 传播价值：适合做热点跟进、短视频剪辑和频道讨论。',
-        '• 行业观察：重点关注热度变化、评论反馈和后续事件发展。',
-        '━━━━━━━━━━━━━━',
-        '📝 <b>编辑短文</b>',
-        f'这条内容不是简单转发源链接，而是围绕“{(title or "本条热点")[:60]}”做二次整理。',
-        '我们会把信息提取、压缩、改写成自己的视频文章结构：标题、导语、看点、评论点和互动问题。',
-        '━━━━━━━━━━━━━━',
-        f'📰 {title}' if title else _plain_text(original_text)[:500],
-    ])
-    return '\n'.join(part for part in parts if part).strip()
-
-
 def _patch_public_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not _is_public_telegram_payload(payload):
         return payload
     patched = dict(payload)
     original_content = str(patched.get('text') or patched.get('caption') or '')
-    content = _compose_public_card_text(original_content, True)
+    content = _compose_public_card_text(original_content)
     if 'text' in patched:
         patched['text'] = _truncate_utf8(content, 3900)
     elif 'caption' in patched:
         patched['caption'] = _truncate_utf8(content, 950)
     patched['reply_markup'] = _build_inline_keyboard(original_content)
+    patched['parse_mode'] = 'HTML'
+    patched['disable_web_page_preview'] = True
     return patched
 
 
@@ -187,11 +178,10 @@ def _build_media_payload(payload: Dict[str, Any]) -> Optional[Tuple[str, Dict[st
     media_type, media_url = _pick_media_url(original_content)
     if media_type not in ('photo', 'video') or not media_url:
         return None
-    caption = _compose_public_card_text(original_content, False)
     media_payload: Dict[str, Any] = {
         'chat_id': payload.get('chat_id'),
-        'caption': _truncate_utf8(caption, 950),
-        'parse_mode': payload.get('parse_mode', 'HTML'),
+        'caption': _truncate_utf8(_compose_public_card_text(original_content), 950),
+        'parse_mode': 'HTML',
         'reply_markup': _build_inline_keyboard(original_content),
     }
     if media_type == 'photo':
@@ -204,7 +194,7 @@ def _build_media_payload(payload: Dict[str, Any]) -> Optional[Tuple[str, Dict[st
 def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
     real_post = _senders.requests.post
 
-    def patched_post(url, *post_args, **post_kwargs):
+    def patched_post(url: str, *post_args: Any, **post_kwargs: Any):
         payload = post_kwargs.get('json')
         if isinstance(payload, dict) and '/sendMessage' in str(url):
             media_result = _build_media_payload(payload)
@@ -213,7 +203,6 @@ def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
                 media_url = str(url).replace('/sendMessage', f'/{method}')
                 media_kwargs = dict(post_kwargs)
                 media_kwargs['json'] = media_payload
-                _log_public_payload_preview(method, media_payload, 'media')
                 response = real_post(media_url, *post_args, **media_kwargs)
                 try:
                     result = response.json()
@@ -221,9 +210,7 @@ def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
                     result = {'ok': False}
                 if response.status_code == 200 and result.get('ok'):
                     return response
-                print(f'[TG预览] 媒体发送失败，自动退回文字卡片。status={response.status_code}')
             post_kwargs['json'] = _patch_public_payload(payload)
-            _log_public_payload_preview('sendMessage', post_kwargs['json'], 'text')
         return real_post(url, *post_args, **post_kwargs)
 
     _senders.requests.post = patched_post

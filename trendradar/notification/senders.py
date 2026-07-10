@@ -457,6 +457,99 @@ def _beautify_public_telegram_batches(
     )
     return [fallback] if fallback else []
 
+
+def _tz02_button_url(key: str) -> str:
+    env_map = {
+        "nba": "TELEGRAM_MENU_NBA_URL",
+        "football": "TELEGRAM_MENU_FOOTBALL_URL",
+        "live": "TELEGRAM_MENU_LIVE_URL",
+        "highlights": "TELEGRAM_MENU_HIGHLIGHTS_URL",
+        "baccarat": "TELEGRAM_MENU_BACCARAT_URL",
+        "poker": "TELEGRAM_MENU_POKER_URL",
+        "dragon_tiger": "TELEGRAM_MENU_DRAGON_TIGER_URL",
+        "egame": "TELEGRAM_MENU_EGAME_URL",
+    }
+    return os.environ.get(env_map.get(key, ""), "").strip()
+
+
+def _tz02_channel_button(text: str, key: str) -> Dict[str, str]:
+    url = _tz02_button_url(key)
+    if url.startswith(("http://", "https://", "tg://")):
+        return {"text": text, "url": url}
+    return {"text": text, "callback_data": f"tr_link:{key}"}
+
+
+def _build_public_telegram_reply_markup(like_count: Optional[int] = None) -> Dict[str, Any]:
+    like_label = "👍 点赞" if like_count is None or like_count <= 0 else f"👍 {like_count}"
+    return {
+        "inline_keyboard": [
+            [_tz02_channel_button("NBA", "nba"), _tz02_channel_button("足球", "football")],
+            [_tz02_channel_button("直播", "live"), _tz02_channel_button("集锦", "highlights")],
+            [_tz02_channel_button("百家乐", "baccarat"), _tz02_channel_button("德州扑克", "poker")],
+            [_tz02_channel_button("龙虎斗", "dragon_tiger"), _tz02_channel_button("电子游戏", "egame")],
+            [
+                {"text": like_label, "callback_data": "tr_like"},
+                {"text": "💬 评论", "callback_data": "tr_comment"},
+            ],
+        ]
+    }
+
+
+def _tz02_plain(text: str) -> str:
+    return _telegram_plain_fallback(str(text or ""))
+
+
+def _tz02_extract_short_comment(text: str) -> str:
+    plain = _tz02_plain(text)
+    remove_contains = (
+        "TrendRadar 原创编辑快报",
+        "TrendRadar 热点快报",
+        "TrendRadar",
+        "要点评论",
+        "核心看点",
+        "传播价值",
+        "行业观察",
+        "编辑短文",
+        "短视频/图片",
+        "今日头条",
+        "当前先编辑为自有短文",
+        "不把评论按钮跳转到源链接",
+        "这条内容不是简单转发源链接",
+        "我们会把信息提取、压缩、改写成自己的视频文章结构",
+        "标题、导语、看点、评论点和互动问题",
+        "功能菜单",
+    )
+    lines = []
+    for raw in plain.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("━"):
+            continue
+        if any(token in line for token in remove_contains):
+            continue
+        line = re.sub(r"^[🧠📝📰🎬🔥]\s*", "", line).strip()
+        line = re.sub(r"^[-•]\s*", "", line).strip()
+        if line and line not in {"AI原创短评", "热点短视频/图片"}:
+            lines.append(line)
+    picked = " ".join(lines[:2]).strip() or "这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道。"
+    picked = re.sub(r"\s+", " ", picked)
+    if len(picked) > 90:
+        picked = picked[:87].rstrip() + "..."
+    return picked
+
+
+def _format_tz02_public_post(text: str, max_bytes: int = 3900) -> str:
+    comment = _tz02_extract_short_comment(text)
+    result = "\n".join([
+        "AI原创短评",
+        "",
+        comment,
+        "",
+        "━━━━━━━━━━━━━━",
+    ]).strip()
+    if len(result.encode("utf-8")) > max_bytes:
+        result = "AI原创短评\n\n" + comment[:160].rstrip()
+    return result
+
 def _extract_ai_stats(ai_analysis) -> Optional[Dict]:
     """从 AI 分析结果中提取统计数据"""
     if not ai_analysis or not getattr(ai_analysis, "success", False):
@@ -1021,29 +1114,7 @@ def send_to_telegram(
     # 统一添加批次头部（已预留空间，不会超限）
     batches = add_batch_headers(batches, "telegram", batch_size)
 
-    # 群组/频道公开版做美观优化，并按“每条新闻/推文/视频一条消息”拆开发送；
-    # 私聊保留完整内部报告原貌，方便排错。
-    if not is_private_target:
-        total_batches = len(batches)
-        single_post_batches = []
-        for index, batch_content in enumerate(batches, 1):
-            single_post_batches.extend(
-                _beautify_public_telegram_batches(
-                    batch_content,
-                    batch_index=index,
-                    batch_total=total_batches,
-                    max_bytes=batch_size,
-                )
-            )
-        batches = single_post_batches or [
-            _beautify_public_telegram_batch(
-                batch_content,
-                batch_index=index,
-                batch_total=total_batches,
-                max_bytes=batch_size,
-            )
-            for index, batch_content in enumerate(batches, 1)
-        ]
+    # TZ02 V4: public Telegram posts use final short-comment UI only.
 
     print(f"{log_prefix}消息分为 {len(batches)} 批次发送 [{report_type}]")
 
@@ -1054,12 +1125,17 @@ def send_to_telegram(
             f"发送{log_prefix}第 {i}/{len(batches)} 批次，大小：{content_size} 字节 [{report_type}]"
         )
 
+        if not is_private_target:
+            batch_content = _format_tz02_public_post(batch_content, max_bytes=batch_size - 100)
+
         payload = {
             "chat_id": chat_id,
             "text": batch_content,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if not is_private_target:
+            payload["reply_markup"] = _build_public_telegram_reply_markup()
 
         try:
             response = requests.post(
@@ -1089,6 +1165,8 @@ def send_to_telegram(
                     "text": _telegram_plain_fallback(batch_content),
                     "disable_web_page_preview": True,
                 }
+                if not is_private_target:
+                    fallback_payload["reply_markup"] = _build_public_telegram_reply_markup()
                 retry_response = requests.post(
                     url, headers=headers, json=fallback_payload, proxies=proxies, timeout=30
                 )

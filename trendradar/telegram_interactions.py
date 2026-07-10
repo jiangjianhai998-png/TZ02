@@ -1,204 +1,149 @@
 # coding=utf-8
-"""Telegram inline button and reply handler for TrendRadar.
-
-Run this process with TELEGRAM_BOT_TOKEN. It handles:
-- Like button: one Telegram user can like one bot post once.
-- Comment button: shows an instruction popup.
-- Replies to bot posts in groups: counted as comments and reflected in the button count.
-"""
-
+"""Telegram interactions for TZ02 final one-page menu."""
 from __future__ import annotations
 
-import hashlib
+import argparse
 import json
 import os
-import subprocess
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import requests
-
-STATE_PATH = Path(".tg_interactions/state.json")
-RUN_SECONDS = int(os.getenv("TG_INTERACTIONS_RUN_SECONDS", "18000"))
-POLL_TIMEOUT = int(os.getenv("TG_INTERACTIONS_POLL_TIMEOUT", "20"))
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+STATE_VERSION = 6
+DEFAULT_STATE_PATH = 'data/telegram_interactions_state.json'
+DEFAULT_POLL_SECONDS = 21000
+DEFAULT_POLL_TIMEOUT = 20
 
 
-def _hash(value: Any) -> str:
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:24]
-
-
-def _load_state() -> Dict[str, Any]:
-    if not STATE_PATH.exists():
-        return {"posts": {}}
+def _load_state(path: Path) -> Dict[str, Any]:
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
     except Exception:
-        return {"posts": {}}
+        data = {}
+    data['version'] = STATE_VERSION
+    data.setdefault('offset', 0)
+    data.setdefault('likes', {})
+    data.setdefault('liked_by', {})
+    return data
 
 
-def _save_state(state: Dict[str, Any]) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+def _save_state(path: Path, state: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
 
 
-def _commit_state() -> None:
-    if not os.getenv("GITHUB_ACTIONS"):
-        return
-    try:
-        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=False)
-        subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=False)
-        subprocess.run(["git", "add", str(STATE_PATH)], check=False)
-        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
-        if diff.returncode != 0:
-            subprocess.run(["git", "commit", "-m", "chore: update telegram interaction state [skip ci]"], check=False)
-            subprocess.run(["git", "pull", "--rebase", "--autostash"], check=False)
-            subprocess.run(["git", "push"], check=False)
-    except Exception as exc:
-        print(f"[TG互动] state commit skipped: {exc}")
-
-
-def _api(method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        response = requests.post(f"{API_BASE}/{method}", json=payload, timeout=30)
-        data = response.json()
-        if not data.get("ok"):
-            print(f"[TG互动] API {method} failed: {data}")
-        return data
-    except Exception as exc:
-        print(f"[TG互动] API {method} exception: {exc}")
-        return {"ok": False, "result": None}
-
-
-def _post_key(chat_id: Any, message_id: Any) -> str:
-    return _hash(f"{chat_id}:{message_id}")
-
-
-def _post_state(state: Dict[str, Any], chat_id: Any, message_id: Any) -> Dict[str, Any]:
-    posts = state.setdefault("posts", {})
-    key = _post_key(chat_id, message_id)
-    return posts.setdefault(key, {"likes": [], "comments": []})
-
-
-def _keyboard(likes: int, comments: int) -> Dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": f"👍 点赞 {likes}", "callback_data": "tr_like"},
-                {"text": f"💬 评论 {comments}", "callback_data": "tr_comment"},
-            ],
-            [{"text": "☰ 功能菜单", "callback_data": "tr_menu"}],
-        ]
-    }
-
-
-def _refresh_buttons(chat_id: Any, message_id: Any, post: Dict[str, Any]) -> None:
-    _api(
-        "editMessageReplyMarkup",
-        {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "reply_markup": _keyboard(len(post.get("likes", [])), len(post.get("comments", []))),
-        },
+def _api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 30) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        f'https://api.telegram.org/bot{token}/{method}',
+        data=json.dumps(payload or {}, ensure_ascii=False).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST',
     )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout + 5) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except Exception as exc:
+        print(f'[TG互动] API Error method={method}: {exc}')
+        return {'ok': False, 'description': str(exc)}
 
 
-def _answer_callback(callback_id: str, text: str, alert: bool = False) -> None:
-    _api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": alert})
+def _menu_url(key: str) -> str:
+    env_map = {
+        'nba': 'TELEGRAM_MENU_NBA_URL', 'football': 'TELEGRAM_MENU_FOOTBALL_URL',
+        'live': 'TELEGRAM_MENU_LIVE_URL', 'highlights': 'TELEGRAM_MENU_HIGHLIGHTS_URL',
+        'baccarat': 'TELEGRAM_MENU_BACCARAT_URL', 'poker': 'TELEGRAM_MENU_POKER_URL',
+        'dragon_tiger': 'TELEGRAM_MENU_DRAGON_TIGER_URL', 'egame': 'TELEGRAM_MENU_EGAME_URL',
+    }
+    return os.getenv(env_map.get(key, ''), '').strip()
 
 
-def _handle_callback(update: Dict[str, Any], state: Dict[str, Any]) -> bool:
-    cb = update.get("callback_query") or {}
-    data = cb.get("data")
-    if data not in {"tr_like", "tr_comment", "tr_menu"}:
+def _channel_button(text: str, key: str) -> Dict[str, str]:
+    url = _menu_url(key)
+    if url.startswith(('http://', 'https://', 'tg://')):
+        return {'text': text, 'url': url}
+    return {'text': text, 'callback_data': f'tr_link:{key}'}
+
+
+def _keyboard(like_count: int = 0) -> Dict[str, Any]:
+    label = '👍 点赞' if like_count <= 0 else f'👍 {like_count}'
+    return {'inline_keyboard': [
+        [_channel_button('NBA', 'nba'), _channel_button('足球', 'football')],
+        [_channel_button('直播', 'live'), _channel_button('集锦', 'highlights')],
+        [_channel_button('百家乐', 'baccarat'), _channel_button('德州扑克', 'poker')],
+        [_channel_button('龙虎斗', 'dragon_tiger'), _channel_button('电子游戏', 'egame')],
+        [{'text': label, 'callback_data': 'tr_like'}, {'text': '💬 评论', 'callback_data': 'tr_comment'}],
+    ]}
+
+
+def _answer(token: str, callback_id: str, text: str) -> None:
+    _api(token, 'answerCallbackQuery', {'callback_query_id': callback_id, 'text': text[:180], 'show_alert': False})
+
+
+def _handle(token: str, state: Dict[str, Any], callback: Dict[str, Any]) -> bool:
+    callback_id = str(callback.get('id') or '')
+    data = str(callback.get('data') or '')
+    message = callback.get('message') or {}
+    chat_id = (message.get('chat') or {}).get('id')
+    message_id = message.get('message_id')
+    user_id = str((callback.get('from') or {}).get('id') or '')
+    if not callback_id or not chat_id or not message_id:
         return False
-
-    message = cb.get("message") or {}
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-    message_id = message.get("message_id")
-    user_id = (cb.get("from") or {}).get("id")
-    callback_id = cb.get("id")
-
-    if not chat_id or not message_id or not callback_id:
-        return False
-
-    post = _post_state(state, chat_id, message_id)
-    user_hash = _hash(user_id)
-
-    if data == "tr_like":
-        likes = post.setdefault("likes", [])
-        if user_hash in likes:
-            _answer_callback(callback_id, f"你已经点过赞了。当前点赞 {len(likes)}")
-            return False
-        likes.append(user_hash)
-        _refresh_buttons(chat_id, message_id, post)
-        _answer_callback(callback_id, f"点赞成功。当前点赞 {len(likes)}")
+    key = f'{chat_id}:{message_id}'
+    if data.startswith('tr_like'):
+        liked = state.setdefault('liked_by', {}).setdefault(key, [])
+        if user_id in liked:
+            liked.remove(user_id)
+            action = '已取消点赞'
+        else:
+            liked.append(user_id)
+            action = '已点赞'
+        count = len(liked)
+        state.setdefault('likes', {})[key] = count
+        _api(token, 'editMessageReplyMarkup', {'chat_id': chat_id, 'message_id': message_id, 'reply_markup': _keyboard(count)})
+        _answer(token, callback_id, f'{action}，当前 {count} 个赞')
         return True
-
-    if data == "tr_comment":
-        _answer_callback(callback_id, "请直接回复这条推文发表评论，系统会自动统计评论数。", True)
+    if data.startswith('tr_comment'):
+        _answer(token, callback_id, '请直接回复这条消息发表评论。')
         return False
-
-    _answer_callback(callback_id, "功能菜单已收到，后续会继续扩展。")
+    if data.startswith('tr_link:'):
+        _answer(token, callback_id, '该频道链接尚未配置，请先在 GitHub Secrets 填写对应 TELEGRAM_MENU_*_URL。')
+        return False
     return False
 
 
-def _handle_reply_comment(update: Dict[str, Any], state: Dict[str, Any]) -> bool:
-    message = update.get("message") or {}
-    reply_to = message.get("reply_to_message") or {}
-    if not reply_to:
-        return False
-
-    chat_id = (message.get("chat") or {}).get("id")
-    source_message_id = reply_to.get("message_id")
-    user_id = (message.get("from") or {}).get("id")
-    text = (message.get("text") or message.get("caption") or "").strip()
-    if not chat_id or not source_message_id or not user_id or not text:
-        return False
-
-    post = _post_state(state, chat_id, source_message_id)
-    comments = post.setdefault("comments", [])
-    comments.append({"user": _hash(user_id), "text": text[:300], "ts": int(time.time())})
-    _refresh_buttons(chat_id, source_message_id, post)
-    print(f"[TG互动] comment saved for post={_post_key(chat_id, source_message_id)} total={len(comments)}")
-    return True
+def poll(token: str, state_path: Path, poll_seconds: int, poll_timeout: int) -> None:
+    _api(token, 'deleteWebhook', {'drop_pending_updates': False}, timeout=10)
+    state = _load_state(state_path)
+    started = time.time()
+    while time.time() - started < poll_seconds:
+        result = _api(token, 'getUpdates', {
+            'offset': int(state.get('offset') or 0), 'timeout': poll_timeout,
+            'allowed_updates': ['callback_query'],
+        }, timeout=poll_timeout + 10)
+        if not result.get('ok'):
+            time.sleep(5)
+            continue
+        for update in result.get('result') or []:
+            update_id = int(update.get('update_id') or 0)
+            state['offset'] = max(int(state.get('offset') or 0), update_id + 1)
+            if 'callback_query' in update:
+                _handle(token, state, update['callback_query'])
+            _save_state(state_path, state)
 
 
 def main() -> None:
-    if not BOT_TOKEN:
-        print("[TG互动] TELEGRAM_BOT_TOKEN is empty, exit.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--state', default=os.getenv('TELEGRAM_INTERACTION_STATE', DEFAULT_STATE_PATH))
+    parser.add_argument('--poll-seconds', type=int, default=int(os.getenv('TELEGRAM_INTERACTION_POLL_SECONDS', DEFAULT_POLL_SECONDS)))
+    parser.add_argument('--poll-timeout', type=int, default=int(os.getenv('TELEGRAM_INTERACTION_POLL_TIMEOUT', DEFAULT_POLL_TIMEOUT)))
+    args = parser.parse_args()
+    token = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
+    if not token:
+        print('[TG互动] TELEGRAM_BOT_TOKEN is empty, skip.')
         return
-
-    print(f"[TG互动] polling started, run_seconds={RUN_SECONDS}")
-    state = _load_state()
-    offset: Optional[int] = None
-    changed = False
-    started = time.monotonic()
-
-    while time.monotonic() - started < RUN_SECONDS:
-        params = {"timeout": POLL_TIMEOUT, "allowed_updates": ["callback_query", "message"]}
-        if offset is not None:
-            params["offset"] = offset
-        result = _api("getUpdates", params)
-        updates = result.get("result") or []
-        for update in updates:
-            offset = int(update.get("update_id", 0)) + 1
-            if _handle_callback(update, state):
-                changed = True
-            if _handle_reply_comment(update, state):
-                changed = True
-            if changed:
-                _save_state(state)
-                _commit_state()
-                changed = False
-
-    _save_state(state)
-    _commit_state()
-    print("[TG互动] polling finished")
+    poll(token, Path(args.state), args.poll_seconds, args.poll_timeout)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
