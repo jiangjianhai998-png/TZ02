@@ -52,18 +52,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Apply TZ02 Telegram layout before install
-        run: python scripts/apply_tz02_telegram_layout.py
-
-      - name: Verify TZ02 Telegram layout patch
+      - name: Verify canonical Telegram card implementation
         run: |
           set -e
-          grep -q "AI原创短评" trendradar/notification/senders.py
-          grep -q "_format_tz02_public_post" trendradar/notification/senders.py
-          grep -q "_build_public_telegram_reply_markup" trendradar/notification/senders.py
-          grep -q "百家乐" trendradar/notification/telegram_interactions.py
+          grep -q "AI原创短评" trendradar/notification/telegram_card.py
+          grep -q "_build_inline_keyboard" trendradar/notification/telegram_card.py
+          grep -q "百家乐" trendradar/notification/telegram_card.py
           grep -q "final-menu worker" trendradar/notification/telegram_interactions.py
-          echo "TZ02 Telegram final layout patch verified."
+          echo "Canonical Telegram card implementation verified."
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
