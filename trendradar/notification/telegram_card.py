@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from html import unescape
+from html import escape, unescape
 from typing import Any, Dict, Optional, Tuple
 
 from . import senders as _senders
@@ -12,6 +12,17 @@ from . import senders as _senders
 _ORIGINAL_SEND_TO_TELEGRAM = _senders.send_to_telegram
 _IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
 _VIDEO_EXTENSIONS = ('.mp4', '.mov', '.m4v', '.webm')
+
+
+class _BufferedTelegramResponse:
+    """Pretend a buffered public batch was accepted by Telegram."""
+
+    status_code = 200
+    text = '{"ok": true}'
+
+    @staticmethod
+    def json() -> Dict[str, Any]:
+        return {'ok': True, 'result': {'message_id': 0}}
 
 
 def _plain_text(text: str) -> str:
@@ -113,31 +124,45 @@ _REMOVE_MARKERS = (
     '标题、导语、看点、评论点和互动问题', '功能菜单',
 )
 
+_BATCH_OR_STATS = re.compile(
+    r'^(?:\[?第\s*\d+\s*/\s*\d+\s*批次\]?|总新闻|新增|热榜|RSS|时间|类型|报告类型|更新时间)'
+)
+
 
 def _extract_short_comment(original_text: str) -> str:
     lines: list[str] = []
+    seen: set[str] = set()
     for raw in _plain_text(original_text).splitlines():
         line = raw.strip()
         if not line or line.startswith('━'):
+            continue
+        if _BATCH_OR_STATS.match(line) or ('批次' in line and '总新闻' in line):
             continue
         if any(marker in line for marker in _REMOVE_MARKERS):
             continue
         line = re.sub(r'^[🧠📝📰🎬🔥📍🧭⏱🗞️📦]\s*', '', line).strip()
         line = re.sub(r'^[•\-*]\s*', '', line).strip()
-        if line and line not in {'AI原创短评', '今日头条', '热点快报'}:
+        line = re.sub(r'^\d+[\.、)]\s*', '', line).strip()
+        if not line or line in {'AI原创短评', '今日头条', '热点快报'}:
+            continue
+        if line not in seen:
+            seen.add(line)
             lines.append(line)
-    comment = ' '.join(lines[:2]).strip()
+        if len(' '.join(lines)) >= 60:
+            break
+    comment = ' '.join(lines).strip()
     if not comment:
-        comment = '这条热点内容已完成二次整理，适合继续剪辑成短视频，并引导用户进入相关频道。'
+        comment = '本轮热点已完成筛选与二次整理，重点信息将持续更新，并同步到对应内容频道。'
     comment = re.sub(r'\s+', ' ', comment)
     return comment[:87].rstrip() + '...' if len(comment) > 90 else comment
 
 
 def _compose_public_card_text(original_text: str) -> str:
+    comment = escape(_extract_short_comment(original_text), quote=False)
     return '\n'.join([
         'AI原创短评',
         '',
-        _extract_short_comment(original_text),
+        comment,
         '',
         '━━━━━━━━━━━━━━',
     ]).strip()
@@ -161,10 +186,8 @@ def _patch_public_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     patched = dict(payload)
     original_content = str(patched.get('text') or patched.get('caption') or '')
     content = _compose_public_card_text(original_content)
-    if 'text' in patched:
-        patched['text'] = _truncate_utf8(content, 3900)
-    elif 'caption' in patched:
-        patched['caption'] = _truncate_utf8(content, 950)
+    patched.pop('caption', None)
+    patched['text'] = _truncate_utf8(content, 3900)
     patched['reply_markup'] = _build_inline_keyboard(original_content)
     patched['parse_mode'] = 'HTML'
     patched['disable_web_page_preview'] = True
@@ -191,30 +214,81 @@ def _build_media_payload(payload: Dict[str, Any]) -> Optional[Tuple[str, Dict[st
     return 'sendVideo', media_payload
 
 
+def _preferred_ai_content(kwargs: Dict[str, Any]) -> str:
+    ai_analysis = kwargs.get('ai_analysis')
+    if not ai_analysis:
+        return ''
+    try:
+        return str(_senders._render_ai_analysis(ai_analysis, 'telegram') or '').strip()
+    except Exception:
+        return str(ai_analysis).strip()
+
+
+def _response_ok(response: Any) -> bool:
+    try:
+        result = response.json()
+    except Exception:
+        result = {'ok': False}
+    return bool(getattr(response, 'status_code', 0) == 200 and result.get('ok'))
+
+
 def send_to_telegram(*args: Any, **kwargs: Any) -> bool:
+    """Send one public card per report while keeping private reports unchanged."""
+
     real_post = _senders.requests.post
+    buffered: list[Tuple[str, tuple[Any, ...], Dict[str, Any], Dict[str, Any]]] = []
 
     def patched_post(url: str, *post_args: Any, **post_kwargs: Any):
         payload = post_kwargs.get('json')
-        if isinstance(payload, dict) and '/sendMessage' in str(url):
-            media_result = _build_media_payload(payload)
-            if media_result:
-                method, media_payload = media_result
-                media_url = str(url).replace('/sendMessage', f'/{method}')
-                media_kwargs = dict(post_kwargs)
-                media_kwargs['json'] = media_payload
-                response = real_post(media_url, *post_args, **media_kwargs)
-                try:
-                    result = response.json()
-                except ValueError:
-                    result = {'ok': False}
-                if response.status_code == 200 and result.get('ok'):
-                    return response
-            post_kwargs['json'] = _patch_public_payload(payload)
+        if (
+            isinstance(payload, dict)
+            and '/sendMessage' in str(url)
+            and _is_public_telegram_payload(payload)
+        ):
+            buffered.append((str(url), post_args, dict(post_kwargs), dict(payload)))
+            return _BufferedTelegramResponse()
         return real_post(url, *post_args, **post_kwargs)
 
     _senders.requests.post = patched_post
     try:
-        return _ORIGINAL_SEND_TO_TELEGRAM(*args, **kwargs)
+        original_ok = bool(_ORIGINAL_SEND_TO_TELEGRAM(*args, **kwargs))
     finally:
         _senders.requests.post = real_post
+
+    if not buffered:
+        return original_ok
+
+    first_url, first_args, first_kwargs, first_payload = buffered[0]
+    combined_batches = '\n\n'.join(
+        str(payload.get('text') or payload.get('caption') or '')
+        for _, _, _, payload in buffered
+    )
+    preferred = _preferred_ai_content(kwargs)
+    source_content = '\n\n'.join(part for part in (preferred, combined_batches) if part.strip())
+
+    final_payload = dict(first_payload)
+    final_payload['text'] = source_content
+    final_payload.pop('caption', None)
+
+    media_result = _build_media_payload(final_payload)
+    send_url = first_url
+    send_payload: Dict[str, Any]
+    if media_result:
+        method, send_payload = media_result
+        send_url = first_url.replace('/sendMessage', f'/{method}')
+    else:
+        send_payload = _patch_public_payload(final_payload)
+
+    final_kwargs = dict(first_kwargs)
+    final_kwargs['json'] = send_payload
+    response = real_post(send_url, *first_args, **final_kwargs)
+    if not _response_ok(response):
+        try:
+            description = response.json().get('description')
+        except Exception:
+            description = getattr(response, 'text', '')
+        print(f"Telegram公开卡片发送失败：{description}")
+        return False
+
+    print(f"Telegram公开卡片已合并 {len(buffered)} 个批次并单条发送")
+    return original_ok
