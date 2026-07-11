@@ -5,36 +5,9 @@ schedule:
   enabled: true
   preset: always_on
 platforms:
-  enabled: true
+  enabled: false
   api_url: ''
-  sources:
-  - id: toutiao
-    name: 今日头条
-    expected_domain: toutiao.com
-  - id: baidu
-    name: 百度热搜
-    expected_domain: baidu.com
-  - id: wallstreetcn-hot
-    name: 华尔街见闻
-    expected_domain: wallstreetcn.com
-  - id: thepaper
-    name: 澎湃新闻
-    expected_domain: thepaper.cn
-  - id: bilibili-hot-search
-    name: bilibili 热搜
-    expected_domain: bilibili.com
-  - id: cls-hot
-    name: 财联社热门
-    expected_domain: cls.cn
-  - id: weibo
-    name: 微博
-    expected_domain: weibo.com
-  - id: douyin
-    name: 抖音
-    expected_domain: douyin.com
-  - id: zhihu
-    name: 知乎
-    expected_domain: zhihu.com
+  sources: []
 rss:
   enabled: true
   freshness_filter:
@@ -101,22 +74,6 @@ rss:
     name: Gambling Insider
     url: https://www.gamblinginsider.com/rss.xml
     max_age_days: 2
-  - id: finextra
-    name: Finextra Payments
-    url: https://www.finextra.com/rss/headlines.aspx
-    max_age_days: 2
-  - id: the-paypers
-    name: The Paypers
-    url: https://thepaypers.com/rss
-    max_age_days: 2
-  - id: pymnts
-    name: PYMNTS
-    url: https://www.pymnts.com/feed/
-    max_age_days: 2
-  - id: coindesk
-    name: CoinDesk
-    url: https://www.coindesk.com/arc/outboundfeeds/rss/
-    max_age_days: 2
 report:
   mode: incremental
   display_mode: keyword
@@ -141,16 +98,13 @@ display:
   - hotlist
   - ai_analysis
   regions:
-    hotlist: true
+    hotlist: false
     new_items: true
     rss: true
     standalone: false
     ai_analysis: true
   standalone:
-    platforms:
-    - bilibili-hot-search
-    - douyin
-    - weibo
+    platforms: []
     rss_feeds: []
     max_items: 30
 notification:
