@@ -91,7 +91,7 @@ def _build_reply_markup(like_count: int = 0) -> Dict[str, Any]:
             [_channel_button("直播", "live"), _channel_button("集锦", "highlights")],
             [_channel_button("百家乐", "baccarat"), _channel_button("德州扑克", "poker")],
             [_channel_button("龙虎斗", "dragon_tiger"), _channel_button("电子游戏", "egame")],
-            [{"text": like_label, "callback_data": "tr_like"}, {"text": "💬 评论", "callback_data": "tr_comment"}],
+            [{"text": like_label, "callback_data": "tr_like"}],
         ]
     }
 
@@ -128,9 +128,6 @@ def _handle_callback(token: str, state: Dict[str, Any], callback: Dict[str, Any]
         _edit_markup(token, message, count)
         _answer(token, callback_id, f"{action}，当前 {count} 个赞")
         return True
-    if data.startswith("tr_comment"):
-        _answer(token, callback_id, "评论入口已保留。可以在消息下方留言互动，不会跳转源链接。")
-        return False
     if data.startswith("tr_link:"):
         link_key = data.split(":", 1)[-1]
         _answer(token, callback_id, f"{link_key} 频道链接还没配置，请先在 GitHub Secrets 设置对应 TELEGRAM_MENU_*_URL。")
