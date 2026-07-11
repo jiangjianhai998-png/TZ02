@@ -78,8 +78,11 @@ jobs:
               subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
           PY
 
-      - name: Apply TZ02 Telegram layout
-        run: python scripts/apply_tz02_telegram_layout.py
+      - name: Verify Telegram interaction worker
+        run: |
+          set -e
+          grep -q "final-menu worker" trendradar/notification/telegram_interactions.py
+          grep -q "_build_reply_markup" trendradar/notification/telegram_interactions.py
 
       - name: Prepare Telegram interaction state
         run: |
