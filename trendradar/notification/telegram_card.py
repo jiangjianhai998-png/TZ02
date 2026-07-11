@@ -107,10 +107,7 @@ def _build_inline_keyboard(content: str) -> Dict[str, list]:
             [_channel_button('直播', 'live'), _channel_button('集锦', 'highlights')],
             [_channel_button('百家乐', 'baccarat'), _channel_button('德州扑克', 'poker')],
             [_channel_button('龙虎斗', 'dragon_tiger'), _channel_button('电子游戏', 'egame')],
-            [
-                {'text': '👍 点赞', 'callback_data': f'tr_like:{post_id}'},
-                {'text': '💬 评论', 'callback_data': f'tr_comment:{post_id}'},
-            ],
+            [{'text': '👍 点赞', 'callback_data': f'tr_like:{post_id}'}],
         ]
     }
 
