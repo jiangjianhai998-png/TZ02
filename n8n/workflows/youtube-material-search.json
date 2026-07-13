@@ -1,0 +1,117 @@
+{
+  "name": "TZ02 - YouTube Material Search",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tz02/youtube-material-search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Material Search Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-760, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || {};\nconst query = String(body.query || '').trim();\nif (query.length < 2 || query.length > 200) throw new Error('query must contain 2-200 characters');\nconst maxResults = Math.min(Math.max(Number(body.max_results || 10), 1), 25);\nconst creativeCommonsOnly = body.creative_commons_only !== false;\nconst params = {\n  part: 'snippet', type: 'video', q: query, maxResults, order: 'relevance',\n  safeSearch: 'moderate', videoEmbeddable: 'true', key: $env.YOUTUBE_API_KEY\n};\nif (creativeCommonsOnly) params.videoLicense = 'creativeCommon';\nif (body.published_after) params.publishedAfter = String(body.published_after);\nif (body.region_code) params.regionCode = String(body.region_code);\nreturn [{json: {query, creativeCommonsOnly, params}}];"
+      },
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-540, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {"name": "part", "value": "={{ $json.params.part }}"},
+            {"name": "type", "value": "={{ $json.params.type }}"},
+            {"name": "q", "value": "={{ $json.params.q }}"},
+            {"name": "maxResults", "value": "={{ $json.params.maxResults }}"},
+            {"name": "order", "value": "={{ $json.params.order }}"},
+            {"name": "safeSearch", "value": "={{ $json.params.safeSearch }}"},
+            {"name": "videoEmbeddable", "value": "={{ $json.params.videoEmbeddable }}"},
+            {"name": "videoLicense", "value": "={{ $json.params.videoLicense || undefined }}"},
+            {"name": "publishedAfter", "value": "={{ $json.params.publishedAfter || undefined }}"},
+            {"name": "regionCode", "value": "={{ $json.params.regionCode || undefined }}"},
+            {"name": "key", "value": "={{ $json.params.key }}"}
+          ]
+        },
+        "options": {"timeout": 30000}
+      },
+      "id": "search",
+      "name": "YouTube Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-300, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ids = ($json.items || []).map(x => x.id?.videoId).filter(Boolean);\nreturn [{json: {ids: ids.join(','), candidate_count: ids.length, key: $env.YOUTUBE_API_KEY}}];"
+      },
+      "id": "ids",
+      "name": "Collect Video IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-60, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {"name": "part", "value": "snippet,contentDetails,status,statistics"},
+            {"name": "id", "value": "={{ $json.ids }}"},
+            {"name": "key", "value": "={{ $json.key }}"}
+          ]
+        },
+        "options": {"timeout": 30000}
+      },
+      "id": "details",
+      "name": "YouTube Video Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [180, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const owned = new Set(String($env.YOUTUBE_OWNED_CHANNEL_IDS || '').split(',').map(x => x.trim()).filter(Boolean));\nconst candidates = ($json.items || []).map(v => {\n  const s = v.snippet || {}, st = v.status || {}, c = v.contentDetails || {}, stats = v.statistics || {};\n  const isOwned = owned.has(s.channelId);\n  const isCC = st.license === 'creativeCommon';\n  const reusable = isOwned || isCC;\n  const views = Number(stats.viewCount || 0), likes = Number(stats.likeCount || 0);\n  const score = (reusable ? 45 : 0) + (st.embeddable ? 10 : 0) + (c.definition === 'hd' ? 5 : 0) + Math.min(20, views / 50000) + Math.min(10, likes / 5000);\n  const thumb = s.thumbnails?.high?.url || s.thumbnails?.medium?.url || s.thumbnails?.default?.url || '';\n  return {video_id:v.id,title:s.title||'',channel_id:s.channelId||'',channel_title:s.channelTitle||'',published_at:s.publishedAt||'',duration:c.duration||'',definition:c.definition||'',license:st.license||'youtube',embeddable:!!st.embeddable,view_count:views,like_count:likes,thumbnail_url:thumb,watch_url:`https://www.youtube.com/watch?v=${v.id}`,risk_level:reusable?'green':'red',reusable,score:Number(score.toFixed(2)),reason:isOwned?'Owned channel':isCC?'Creative Commons; verify attribution and uploader authority':'Standard license; discovery only'};\n}).sort((a,b)=>b.score-a.score);\nreturn [{json:{generated_at:new Date().toISOString(),candidate_count:candidates.length,reusable_count:candidates.filter(x=>x.reusable).length,candidates,download_performed:false}}];"
+      },
+      "id": "score",
+      "name": "Score and Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Return Candidate List",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "Material Search Webhook": {"main": [[{"node": "Validate Request", "type": "main", "index": 0}]]},
+    "Validate Request": {"main": [[{"node": "YouTube Search", "type": "main", "index": 0}]]},
+    "YouTube Search": {"main": [[{"node": "Collect Video IDs", "type": "main", "index": 0}]]},
+    "Collect Video IDs": {"main": [[{"node": "YouTube Video Details", "type": "main", "index": 0}]]},
+    "YouTube Video Details": {"main": [[{"node": "Score and Classify", "type": "main", "index": 0}]]},
+    "Score and Classify": {"main": [[{"node": "Return Candidate List", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "active": false,
+  "versionId": "tz02-youtube-material-search-v1"
+}
