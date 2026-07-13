@@ -2,116 +2,52 @@
   "name": "TZ02 - YouTube Material Search",
   "nodes": [
     {
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "tz02/youtube-material-search",
-        "responseMode": "responseNode",
-        "options": {}
-      },
-      "id": "webhook",
-      "name": "Material Search Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [-760, 0]
+      "parameters": {"httpMethod":"POST","path":"tz02/youtube-material-search","responseMode":"responseNode","options":{}},
+      "id":"webhook","name":"Material Search Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[-760,0]
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || {};\nconst query = String(body.query || '').trim();\nif (query.length < 2 || query.length > 200) throw new Error('query must contain 2-200 characters');\nconst maxResults = Math.min(Math.max(Number(body.max_results || 10), 1), 25);\nconst creativeCommonsOnly = body.creative_commons_only !== false;\nconst params = {\n  part: 'snippet', type: 'video', q: query, maxResults, order: 'relevance',\n  safeSearch: 'moderate', videoEmbeddable: 'true', key: $env.YOUTUBE_API_KEY\n};\nif (creativeCommonsOnly) params.videoLicense = 'creativeCommon';\nif (body.published_after) params.publishedAfter = String(body.published_after);\nif (body.region_code) params.regionCode = String(body.region_code);\nreturn [{json: {query, creativeCommonsOnly, params}}];"
+        "jsCode": "const body=$json.body||{}; const query=String(body.query||'').trim(); if(query.length<2||query.length>200) throw new Error('query must contain 2-200 characters'); const maxResults=Math.min(Math.max(Number(body.max_results||10),1),25); const creativeCommonsOnly=body.creative_commons_only!==false; const keywords=Array.isArray(body.keywords)?body.keywords.map(String):String(body.keywords||'').split(',').map(x=>x.trim()).filter(Boolean); const minRelevance=Math.min(Math.max(Number(body.min_relevance||20),0),100); const params={part:'snippet',type:'video',q:query,maxResults,order:'relevance',safeSearch:'moderate',videoEmbeddable:'true',key:$env.YOUTUBE_API_KEY}; if(creativeCommonsOnly) params.videoLicense='creativeCommon'; if(body.published_after) params.publishedAfter=String(body.published_after); if(body.region_code) params.regionCode=String(body.region_code); return [{json:{query,keywords,minRelevance,creativeCommonsOnly,params}}];"
       },
-      "id": "validate",
-      "name": "Validate Request",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-540, 0]
+      "id":"validate","name":"Validate Request","type":"n8n-nodes-base.code","typeVersion":2,"position":[-540,0]
     },
     {
       "parameters": {
-        "url": "https://www.googleapis.com/youtube/v3/search",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {"name": "part", "value": "={{ $json.params.part }}"},
-            {"name": "type", "value": "={{ $json.params.type }}"},
-            {"name": "q", "value": "={{ $json.params.q }}"},
-            {"name": "maxResults", "value": "={{ $json.params.maxResults }}"},
-            {"name": "order", "value": "={{ $json.params.order }}"},
-            {"name": "safeSearch", "value": "={{ $json.params.safeSearch }}"},
-            {"name": "videoEmbeddable", "value": "={{ $json.params.videoEmbeddable }}"},
-            {"name": "videoLicense", "value": "={{ $json.params.videoLicense || undefined }}"},
-            {"name": "publishedAfter", "value": "={{ $json.params.publishedAfter || undefined }}"},
-            {"name": "regionCode", "value": "={{ $json.params.regionCode || undefined }}"},
-            {"name": "key", "value": "={{ $json.params.key }}"}
-          ]
-        },
-        "options": {"timeout": 30000}
+        "url":"https://www.googleapis.com/youtube/v3/search","sendQuery":true,
+        "queryParameters":{"parameters":[
+          {"name":"part","value":"={{ $json.params.part }}"},{"name":"type","value":"={{ $json.params.type }}"},{"name":"q","value":"={{ $json.params.q }}"},{"name":"maxResults","value":"={{ $json.params.maxResults }}"},{"name":"order","value":"={{ $json.params.order }}"},{"name":"safeSearch","value":"={{ $json.params.safeSearch }}"},{"name":"videoEmbeddable","value":"={{ $json.params.videoEmbeddable }}"},{"name":"videoLicense","value":"={{ $json.params.videoLicense || undefined }}"},{"name":"publishedAfter","value":"={{ $json.params.publishedAfter || undefined }}"},{"name":"regionCode","value":"={{ $json.params.regionCode || undefined }}"},{"name":"key","value":"={{ $json.params.key }}"}
+        ]},"options":{"timeout":30000}
       },
-      "id": "search",
-      "name": "YouTube Search",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [-300, 0]
+      "id":"search","name":"YouTube Search","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-300,0]
+    },
+    {
+      "parameters":{"jsCode":"const ids=($json.items||[]).map(x=>x.id?.videoId).filter(Boolean); return [{json:{ids:ids.join(','),candidate_count:ids.length,key:$env.YOUTUBE_API_KEY}}];"},
+      "id":"ids","name":"Collect Video IDs","type":"n8n-nodes-base.code","typeVersion":2,"position":[-60,0]
+    },
+    {
+      "parameters":{"url":"https://www.googleapis.com/youtube/v3/videos","sendQuery":true,"queryParameters":{"parameters":[{"name":"part","value":"snippet,contentDetails,status,statistics"},{"name":"id","value":"={{ $json.ids }}"},{"name":"key","value":"={{ $json.key }}"}]},"options":{"timeout":30000}},
+      "id":"details","name":"YouTube Video Details","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[180,0]
     },
     {
       "parameters": {
-        "jsCode": "const ids = ($json.items || []).map(x => x.id?.videoId).filter(Boolean);\nreturn [{json: {ids: ids.join(','), candidate_count: ids.length, key: $env.YOUTUBE_API_KEY}}];"
+        "jsCode": "const cfg=$node['Validate Request'].json; const query=String(cfg.query||''); const wanted=new Set([...query.toLowerCase().matchAll(/[a-z0-9][a-z0-9._'-]{1,}/g)].map(x=>x[0]).concat((cfg.keywords||[]).map(x=>String(x).toLowerCase()))); const blocked=['tiktok','compilation','reaction','reupload','fan channel','2k gameplay']; const owned=new Set(String($env.YOUTUBE_OWNED_CHANNEL_IDS||'').split(',').map(x=>x.trim()).filter(Boolean)); const candidates=($json.items||[]).map(v=>{const s=v.snippet||{},st=v.status||{},c=v.contentDetails||{},stats=v.statistics||{}; const text=`${s.title||''} ${s.description||''}`.toLowerCase(); const title=String(s.title||'').toLowerCase(); const titleHits=[...wanted].filter(x=>title.includes(x)).length; const bodyHits=[...wanted].filter(x=>text.includes(x)).length; const relevance=Math.min(100,titleHits*14+bodyHits*5+(text.includes(query.toLowerCase())?20:0)); const excluded=blocked.some(x=>`${s.title||''} ${s.channelTitle||''}`.toLowerCase().includes(x)); const isOwned=owned.has(s.channelId), isCC=st.license==='creativeCommon'; const reusable=(isOwned||isCC)&&!!st.embeddable&&!excluded&&relevance>=Number(cfg.minRelevance||20); const views=Number(stats.viewCount||0),likes=Number(stats.likeCount||0); const quality=(st.embeddable?10:0)+(c.definition==='hd'?8:0)+Math.min(12,Math.log10(Math.max(views,1))*2)+Math.min(10,Math.log10(Math.max(likes,1))*2); const score=Math.max(0,(isOwned||isCC?35:0)+relevance*.45+quality-(excluded?40:0)); const thumb=s.thumbnails?.high?.url||s.thumbnails?.medium?.url||s.thumbnails?.default?.url||''; const risk=excluded?'red':relevance<Number(cfg.minRelevance||20)?'yellow':reusable?'green':'red'; return {video_id:v.id,title:s.title||'',channel_id:s.channelId||'',channel_title:s.channelTitle||'',published_at:s.publishedAt||'',duration:c.duration||'',definition:c.definition||'',license:st.license||'youtube',embeddable:!!st.embeddable,view_count:views,like_count:likes,thumbnail_url:thumb,watch_url:`https://www.youtube.com/watch?v=${v.id}`,risk_level:risk,reusable,relevance_score:Number(relevance.toFixed(2)),quality_score:Number(quality.toFixed(2)),score:Number(score.toFixed(2)),excluded};}).sort((a,b)=>(Number(b.reusable)-Number(a.reusable))||(b.score-a.score)); const selected=candidates.filter(x=>x.reusable).slice(0,3); const lines=['🎬 YouTube 素材候选',`主题：${query}`,'']; const keyboard=[]; selected.forEach((x,i)=>{lines.push(`${i+1}. ${x.title.slice(0,80)}`,`频道：${x.channel_title}｜相关度：${x.relevance_score.toFixed(0)}｜总分：${x.score.toFixed(0)}`,`许可：${x.license}`,''); keyboard.push([{text:`▶️ 查看 ${i+1}`,url:x.watch_url},{text:`✅ 批准 ${i+1}`,callback_data:`yt_approve:${x.video_id}`},{text:`❌ 拒绝 ${i+1}`,callback_data:`yt_reject:${x.video_id}`}]);}); if(!selected.length) lines.push('没有通过版权与相关性门槛的候选素材。'); return [{json:{query,generated_at:new Date().toISOString(),candidate_count:candidates.length,reusable_count:selected.length,candidates,telegram_approval:{text:lines.join('\n').trim(),reply_markup:{inline_keyboard:keyboard},candidate_video_ids:selected.map(x=>x.video_id)},download_performed:false}}];"
       },
-      "id": "ids",
-      "name": "Collect Video IDs",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-60, 0]
+      "id":"score","name":"Score and Classify","type":"n8n-nodes-base.code","typeVersion":2,"position":[420,0]
     },
     {
-      "parameters": {
-        "url": "https://www.googleapis.com/youtube/v3/videos",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {"name": "part", "value": "snippet,contentDetails,status,statistics"},
-            {"name": "id", "value": "={{ $json.ids }}"},
-            {"name": "key", "value": "={{ $json.key }}"}
-          ]
-        },
-        "options": {"timeout": 30000}
-      },
-      "id": "details",
-      "name": "YouTube Video Details",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [180, 0]
-    },
-    {
-      "parameters": {
-        "jsCode": "const owned = new Set(String($env.YOUTUBE_OWNED_CHANNEL_IDS || '').split(',').map(x => x.trim()).filter(Boolean));\nconst candidates = ($json.items || []).map(v => {\n  const s = v.snippet || {}, st = v.status || {}, c = v.contentDetails || {}, stats = v.statistics || {};\n  const isOwned = owned.has(s.channelId);\n  const isCC = st.license === 'creativeCommon';\n  const reusable = isOwned || isCC;\n  const views = Number(stats.viewCount || 0), likes = Number(stats.likeCount || 0);\n  const score = (reusable ? 45 : 0) + (st.embeddable ? 10 : 0) + (c.definition === 'hd' ? 5 : 0) + Math.min(20, views / 50000) + Math.min(10, likes / 5000);\n  const thumb = s.thumbnails?.high?.url || s.thumbnails?.medium?.url || s.thumbnails?.default?.url || '';\n  return {video_id:v.id,title:s.title||'',channel_id:s.channelId||'',channel_title:s.channelTitle||'',published_at:s.publishedAt||'',duration:c.duration||'',definition:c.definition||'',license:st.license||'youtube',embeddable:!!st.embeddable,view_count:views,like_count:likes,thumbnail_url:thumb,watch_url:`https://www.youtube.com/watch?v=${v.id}`,risk_level:reusable?'green':'red',reusable,score:Number(score.toFixed(2)),reason:isOwned?'Owned channel':isCC?'Creative Commons; verify attribution and uploader authority':'Standard license; discovery only'};\n}).sort((a,b)=>b.score-a.score);\nreturn [{json:{generated_at:new Date().toISOString(),candidate_count:candidates.length,reusable_count:candidates.filter(x=>x.reusable).length,candidates,download_performed:false}}];"
-      },
-      "id": "score",
-      "name": "Score and Classify",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [420, 0]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ $json }}",
-        "options": {}
-      },
-      "id": "respond",
-      "name": "Return Candidate List",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
-      "position": [660, 0]
+      "parameters":{"respondWith":"json","responseBody":"={{ $json }}","options":{}},
+      "id":"respond","name":"Return Candidate List","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.4,"position":[660,0]
     }
   ],
   "connections": {
-    "Material Search Webhook": {"main": [[{"node": "Validate Request", "type": "main", "index": 0}]]},
-    "Validate Request": {"main": [[{"node": "YouTube Search", "type": "main", "index": 0}]]},
-    "YouTube Search": {"main": [[{"node": "Collect Video IDs", "type": "main", "index": 0}]]},
-    "Collect Video IDs": {"main": [[{"node": "YouTube Video Details", "type": "main", "index": 0}]]},
-    "YouTube Video Details": {"main": [[{"node": "Score and Classify", "type": "main", "index": 0}]]},
-    "Score and Classify": {"main": [[{"node": "Return Candidate List", "type": "main", "index": 0}]]}
+    "Material Search Webhook":{"main":[[{"node":"Validate Request","type":"main","index":0}]]},
+    "Validate Request":{"main":[[{"node":"YouTube Search","type":"main","index":0}]]},
+    "YouTube Search":{"main":[[{"node":"Collect Video IDs","type":"main","index":0}]]},
+    "Collect Video IDs":{"main":[[{"node":"YouTube Video Details","type":"main","index":0}]]},
+    "YouTube Video Details":{"main":[[{"node":"Score and Classify","type":"main","index":0}]]},
+    "Score and Classify":{"main":[[{"node":"Return Candidate List","type":"main","index":0}]]}
   },
-  "settings": {"executionOrder": "v1"},
-  "active": false,
-  "versionId": "tz02-youtube-material-search-v1"
+  "settings":{"executionOrder":"v1"},
+  "active":false,
+  "versionId":"tz02-youtube-material-search-v2"
 }
